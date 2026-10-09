@@ -1,0 +1,6 @@
+{
+  "name": "Gothwad Mail",
+  "description": "Fast, modern desktop and mobile email client with Gmail-style workflows, customizable themes, and seamless Supabase database synchronization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
