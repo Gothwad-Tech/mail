@@ -117,10 +117,13 @@ export function getStoredSupabaseConfig(): SupabaseConfig {
     console.error('Failed to parse Supabase config', err);
   }
 
+  const envUrl = (import.meta as { env?: { VITE_SUPABASE_URL?: string } }).env?.VITE_SUPABASE_URL || '';
+  const envKey = (import.meta as { env?: { VITE_SUPABASE_ANON_KEY?: string } }).env?.VITE_SUPABASE_ANON_KEY || '';
+
   return {
-    url: '',
-    anonKey: '',
-    isConnected: false,
+    url: envUrl,
+    anonKey: envKey,
+    isConnected: Boolean(envUrl && envKey),
     autoSync: false,
   };
 }
