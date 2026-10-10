@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 
 const API = process.env.MAIL_API_ORIGIN || 'http://127.0.0.1:8787';
+const APP_ORIGIN = 'http://localhost:3000';
 const GOOD_COOKIE = process.env.MAIL_TEST_COOKIE || 'gothwad_at=good';
 let activeCookie = GOOD_COOKIE;
 
@@ -52,6 +53,9 @@ globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
   if (url.startsWith('/api/')) {
     const headers = new Headers(init?.headers);
     headers.set('cookie', activeCookie);
+    // Browsers send Origin on same-origin writes; the Worker's CSRF guard needs it.
+    // jsdom does not add it, so we add it here to match the real browser.
+    if (init?.method && init.method !== 'GET') headers.set('origin', APP_ORIGIN);
     return realFetch(`${API}${url}`, { ...init, headers });
   }
   return realFetch(input as never, init);
