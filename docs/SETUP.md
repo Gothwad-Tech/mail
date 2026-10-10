@@ -139,7 +139,8 @@ If `/api/health` returns HTML, the route is not matching. Fix the route order be
 Unknown domains are rejected with 550. Oversized mail (over `MAX_INBOUND_BYTES`) is
 rejected with 552.
 
-> Open decision: today every local part on the domain is accepted (see `PLAN.md`).
+> Inbound is accounts-only: a message to `name@YOUR_DOMAIN` is kept only if `name` is a
+> username in Accounts' `profiles` table. Unknown names bounce (550). See `PLAN.md`.
 
 ---
 

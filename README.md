@@ -72,6 +72,6 @@ SQL (for the Accounts owner), the Worker route, Email Routing, and the Resend do
 ## Known limits
 
 - Attachments: only name, type and size are kept. The bytes are not stored yet.
-- Inbound accepts any address on `APP_DOMAIN` for now. This is an open decision (see `PLAN.md`).
+- Inbound is accounts-only: mail is kept only for usernames that exist in Accounts (`profiles`). Unknown names get a 550 bounce.
 - No Undo for Trash. No restore from Trash yet.
 - Refresh is manual. There is no polling.

@@ -4,6 +4,8 @@
 // Flow:
 //   someone -> pawan@gothwadtech.com
 //   -> Cloudflare Email Routing (catch-all *@APP_DOMAIN -> this Worker)
+//   -> domain check, size check, then "is this a real Gothwad account?"
+//      (accounts-only rule; reads public.profiles, see accountExists)
 //   -> parse MIME (postal-mime)
 //   -> insert one row into public.mail_messages (folder = 'inbox')
 //
@@ -20,6 +22,7 @@ import PostalMime from 'postal-mime';
 import type { Config } from './config';
 import { Db } from './db';
 import { makeSnippet, AttachmentMeta, MAX_STORED_HTML_CHARS } from './mail';
+import { normalizeUsername } from './session';
 
 const MAX_STORED_TEXT_CHARS = 200_000;
 const MAX_SUBJECT_CHARS = 998;
@@ -49,6 +52,23 @@ export function localPartForDomain(address: string, appDomain: string): string |
   return local;
 }
 
+/**
+ * Accounts-only rule: mail is kept only when the name is a real Gothwad user.
+ * Why: without this, anyone could fill the database with mail to random names.
+ *
+ * We read public.profiles (the Accounts table, same Supabase project) with the
+ * service key. This is a read of the shared database. It is NOT a call to a new
+ * Accounts endpoint, because none exists for this yet.
+ */
+async function accountExists(username: string, db: Db): Promise<boolean> {
+  const rows = await db.select<{ username: string }>('profiles', {
+    select: 'username',
+    username: `eq.${username}`,
+    limit: '1',
+  });
+  return rows.length > 0;
+}
+
 export async function handleInbound(message: ForwardableEmailMessage, config: Config, db: Db): Promise<void> {
   const local = localPartForDomain(message.to, config.appDomain);
   if (!local) {
@@ -56,8 +76,31 @@ export async function handleInbound(message: ForwardableEmailMessage, config: Co
     return;
   }
 
+  // Cheap checks first: size is checked before any database call.
   if (message.rawSize > config.maxInboundBytes) {
     message.setReject('552 5.3.4 Message too large');
+    return;
+  }
+
+  // Bad name shapes are rejected without touching the database.
+  const username = normalizeUsername(local);
+  if (!username) {
+    message.setReject('550 5.1.1 Unknown recipient');
+    return;
+  }
+
+  let exists: boolean;
+  try {
+    exists = await accountExists(username, db);
+  } catch {
+    // Lookup failed (for example Supabase is down). Use a 4xx "try again later" so
+    // the sender retries and the mail is not lost. Never guess "exists".
+    console.error('inbound_account_lookup_failed');
+    message.setReject('451 4.3.0 Temporary failure, please retry later');
+    return;
+  }
+  if (!exists) {
+    message.setReject('550 5.1.1 Unknown recipient');
     return;
   }
 

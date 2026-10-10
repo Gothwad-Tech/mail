@@ -15,17 +15,18 @@
 | Auth gate | Done | Signed-out goes to `/signin?choose=1&next=` |
 | Docs | Done | README, AGENTS, TASK, PLAN, docs/ |
 
-## Open decisions (ask the user)
+## Decisions made with the owner
 
-1. **Inbound: which addresses are accepted?** Today any local part on `APP_DOMAIN` is stored.
-   This is a spam and storage risk. Options:
-   - a. Accept only usernames that exist in Accounts. Needs an Accounts lookup endpoint.
-     None exists today, and we must not invent one. Would need a change in the Accounts repo, done by its owner.
-   - b. Accept only a fixed allow-list, kept in our own table.
-   - c. Keep accepting everything for now, and add a per-address rate limit.
-2. **Attachments.** Today only name, type and size are kept, and bytes are dropped.
-   The owner said tiny files only (under 200 KB total), otherwise skip with a note. Storing
-   tiny files needs a storage decision (Supabase Storage on the free tier, or leave it out).
+1. **Inbound is accounts-only.** A message is kept only if its name is a row in
+   `public.profiles` (Accounts' table, same Supabase project). The Worker reads it with the
+   service key. This is not a new Accounts endpoint, and Accounts is not edited.
+   - Unknown name → 550 (bounced). Bad name shape → 550, with no database call.
+   - Lookup failure → 451 (sender retries). The Worker never guesses that a user exists.
+   - Usernames are lowercased in Accounts (signup and its SQL use `LOWER(TRIM(...))`), so the
+     exact-match lookup is safe. The Worker lowercases the name too.
+2. **Attachments: not now.** Only name, type and size are kept, and bytes are dropped. The
+   brief allows tiny files (under 200 KB total). Storing them is a later step (needs a place
+   on the free tier, such as Supabase Storage).
 
 ## Known gaps (not blocking)
 

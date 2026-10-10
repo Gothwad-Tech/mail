@@ -21,6 +21,7 @@ Backend is a Cloudflare Worker REST API plus an Email Worker for inbound mail, o
 - Worker: REST API, scoped queries (`to_username`), Accounts session, send via Resend
   with a daily cap, inbound Email handler, CSRF guard, size caps.
 - Worker fixes found by testing against a realistic Accounts stub:
+  - Inbound now checks `profiles.username` before storing mail (accounts-only).
   - Rotated `gothwad_*` Set-Cookie from Accounts are now passed to the browser.
   - `decodeURIComponent` on bad `%` input now returns 400, not 500.
   - Supabase is accepted at a loopback URL in development only (for local tests).
@@ -29,7 +30,7 @@ Backend is a Cloudflare Worker REST API plus an Email Worker for inbound mail, o
   (sandboxed iframe with CSP, no scripts), list (loading/empty/error, Load more).
 - Package renamed to `gothwad-mail`. `.env.example` has `VITE_` placeholders only.
   `OfflineIndicator` text no longer claims cached data.
-- Tests: 30 Worker tests (`npm run test:worker`), 2 UI smoke tests (`npm run test:ui`).
+- Tests: 33 Worker tests (`npm run test:worker`), 2 UI smoke tests (`npm run test:ui`).
 - Docs: `README.md`, `AGENTS.md`, `PLAN.md`, `docs/SETUP.md`, `docs/MAIL.md`.
 
 **Verified in this sandbox**
@@ -48,12 +49,14 @@ Backend is a Cloudflare Worker REST API plus an Email Worker for inbound mail, o
 - Real Resend sending, real Supabase, real Email Routing, production deploy. These need the
   human steps in `docs/SETUP.md`.
 
-**Open decisions (ask the user before inbound is final)**
-- Inbound accepts mail for ANY local part on `APP_DOMAIN` (spam and storage risk). Checking
-  against Accounts needs an endpoint that does not exist yet. Do not invent one.
-- Attachment bytes are never stored. Tiny-file storage (under 200 KB) is not built yet.
+**Decisions made with the owner**
+- Inbound is **accounts-only**. Mail is kept only if the name is in `public.profiles`
+  (the Accounts table, same Supabase project). That is a read of the shared DB, not a new
+  Accounts endpoint. Unknown names get 550. A failed lookup gets 451 (retry), never a guess.
+- Attachments: **not now**. Only name, type and size are kept, and the bytes are dropped.
+  Tiny-file storage (under 200 KB) can come later.
 
 **Next session**
-- Decide the inbound rule above.
 - Visual check in a real browser.
+- Confirm the 451 "retry later" reply works with Cloudflare Email Routing (not testable here).
 - Human runs the SQL and secrets steps in `docs/SETUP.md`, then deploy.

@@ -414,9 +414,19 @@ test('inbound routing only accepts our APP_DOMAIN, case-insensitive', () => {
   assert.equal(localPartForDomain('@gothwadtech.com', 'gothwadtech.com'), null);
 });
 
+/** Supabase stub for inbound: "pawan" is a real Accounts user, nobody else is. */
+function profilesStub(s: Seen): Response | null {
+  if (s.url.host === 'abcdefgh.supabase.co' && s.method === 'GET' && s.url.pathname === '/rest/v1/profiles') {
+    return Response.json(s.url.searchParams.get('username') === 'eq.pawan' ? [{ username: 'pawan' }] : []);
+  }
+  return null;
+}
+
 test('inbound email: parses MIME, stores metadata only, drops attachment bytes', async () => {
   let inserted: Record<string, unknown> | null = null;
   stub = (s) => {
+    const profile = profilesStub(s);
+    if (profile) return profile;
     if (s.url.host === 'abcdefgh.supabase.co' && s.method === 'POST') {
       inserted = JSON.parse(s.body || '{}');
       return Response.json([{ id: 'in-1' }]);
@@ -509,6 +519,47 @@ test('inbound email over the size cap is rejected before parsing', async () => {
   await worker.email(message, baseEnv);
   assert.match(rejected ?? '', /too large/);
   assert.equal(seen.length, 0);
+});
+
+function inboundMessage(to: string, rawSize = 100): { msg: ForwardableEmailMessage; rejected: () => string | null } {
+  let rejected: string | null = null;
+  const msg = {
+    from: 'x@y.com',
+    to,
+    rawSize,
+    raw: new Response('hi').body!,
+    headers: new Headers(),
+    setReject: (r: string) => {
+      rejected = r;
+    },
+  } as unknown as ForwardableEmailMessage;
+  return { msg, rejected: () => rejected };
+}
+
+test('inbound email to a name that is not a Gothwad account is rejected and not stored', async () => {
+  // Accounts-only rule: random names on our domain must not fill the database.
+  stub = (s) => profilesStub(s) ?? new Response('x', { status: 599 });
+  const { msg, rejected } = inboundMessage('nobody-here@gothwadtech.com');
+  await worker.email(msg, baseEnv);
+  assert.match(rejected() ?? '', /^550 .*Unknown recipient/);
+  assert.equal(seen.some((x) => x.method === 'POST'), false, 'no row inserted');
+});
+
+test('inbound lookup failure asks the sender to retry (451) and stores nothing', async () => {
+  // Never guess "this user exists" when the database is down.
+  stub = (s) => (s.url.pathname === '/rest/v1/profiles' ? new Response('down', { status: 503 }) : new Response('x', { status: 599 }));
+  const { msg, rejected } = inboundMessage('pawan@gothwadtech.com');
+  await worker.email(msg, baseEnv);
+  assert.match(rejected() ?? '', /^451 /);
+  assert.equal(seen.some((x) => x.method === 'POST'), false, 'no row inserted');
+});
+
+test('inbound name with a bad shape is rejected before any database call', async () => {
+  stub = (s) => profilesStub(s) ?? new Response('x', { status: 599 });
+  const { msg, rejected } = inboundMessage('-bad@gothwadtech.com');
+  await worker.email(msg, baseEnv);
+  assert.match(rejected() ?? '', /^550 /);
+  assert.equal(seen.length, 0, 'no Supabase call at all');
 });
 
 test('rotated Accounts cookies are passed to the browser; other cookies are dropped', async () => {

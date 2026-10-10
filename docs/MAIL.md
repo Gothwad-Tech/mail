@@ -103,15 +103,18 @@ The `email()` handler runs for each message that Email Routing sends to the Work
 
 1. Reject if the recipient is not on `APP_DOMAIN` (**550**). The check is case-insensitive.
 2. Reject if the raw message is over `MAX_INBOUND_BYTES` (default 10 MB) (**552**). This
-   happens before any parsing.
-3. Parse MIME with `postal-mime`.
-4. Store the text body (up to 200,000 characters) and the HTML body (up to 500,000
+   happens before any parsing or database call.
+3. **Accounts-only:** the name must be a real Gothwad user. The Worker checks that the name
+   has a valid shape, then reads one row from `public.profiles` (username = name) with the
+   service key. No row → **550** (bounce). Bad shape → **550** with no database call. Lookup
+   error (for example Supabase is down) → **451** (sender retries). Mail is never kept for a
+   name that was not confirmed.
+4. Parse MIME with `postal-mime`.
+5. Store the text body (up to 200,000 characters) and the HTML body (up to 500,000
    characters). Each is truncated, not rejected.
-5. Attachments: **metadata only** (`name`, `type`, `size`). Bytes are dropped. The reader says
-   so. Storing tiny files is an open decision (see `PLAN.md`).
-6. Insert with `folder = 'inbox'` and `to_username` set to the local part.
-
-> Open decision: any local part on `APP_DOMAIN` is accepted. See `PLAN.md`.
+6. Attachments: **metadata only** (`name`, `type`, `size`). Bytes are dropped. The reader says
+   so. Storing tiny files is a later step (see `PLAN.md`).
+7. Insert with `folder = 'inbox'` and `to_username` set to the local part.
 
 ## The reader is safe by design
 
