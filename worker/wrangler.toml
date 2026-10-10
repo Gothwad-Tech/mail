@@ -1,0 +1,32 @@
+# =============================================================================
+# Gothwad Mail Worker config. NO SECRETS IN THIS FILE.
+#
+# Secrets (set in the dashboard or with `wrangler secret put`):
+#   SUPABASE_SERVICE_ROLE_KEY   (sb_secret_... or legacy eyJ... service_role)
+#   RESEND_API_KEY              (re_...)
+#
+# Before the first deploy, replace SUPABASE_URL with your project URL.
+# That is public config, not a secret. The Worker refuses to call Supabase
+# while the placeholder is still in place.
+#
+# Route (production): mail.gothwadtech.com/api/*  -> this Worker
+# Email Routing (catch-all *@gothwadtech.com)     -> this Worker's email() handler
+# See docs/SETUP.md for the dashboard steps.
+# =============================================================================
+
+name = "gothwad-mail-api"
+main = "src/index.ts"
+compatibility_date = "2025-09-01"
+
+[vars]
+APP_DOMAIN = "gothwadtech.com"
+AUTH_HUB_URL = "https://accounts.gothwadtech.com"
+MAIL_URL = "https://mail.gothwadtech.com"
+SUPABASE_URL = "https://YOUR_PROJECT_REF.supabase.co"
+ENVIRONMENT = "production"
+# Extra allowed origins, comma-separated (e.g. a Pages preview URL). Empty = none.
+ALLOWED_ORIGINS = ""
+# Per-user, per-UTC-day send cap. Resend free plan = 3,000 emails/month total.
+DAILY_SEND_LIMIT = "30"
+# Inbound messages above this size are rejected at SMTP time (10 MB).
+MAX_INBOUND_BYTES = "10485760"

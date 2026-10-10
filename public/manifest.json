@@ -2,7 +2,7 @@
   "id": "/",
   "name": "Gothwad Mail",
   "short_name": "GothwadMail",
-  "description": "Fast, modern desktop and mobile email client with Gmail-style workflows, customizable themes, and seamless Supabase database synchronization.",
+  "description": "Fast, modern desktop and mobile webmail for your Gothwad address, signed in with Gothwad Accounts.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
