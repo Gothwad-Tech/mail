@@ -1,15 +1,14 @@
 -- =============================================================================
 -- GOTHWAD MAIL: database schema
 --
--- WHERE TO RUN: Supabase Dashboard > SQL Editor, in the SAME project that
--- Gothwad Accounts uses (shared identity DB). Run the whole file once.
--- It is safe to run again (IF NOT EXISTS / DROP POLICY IF EXISTS).
+-- WHERE TO RUN: Supabase Dashboard > SQL Editor, in a separate project created
+-- for Gothwad Mail. Run the whole file once. It is safe to run again.
 --
 -- WHO TOUCHES THIS TABLE:
---   * Cloudflare Worker (service role key) -> reads/writes all mail rows.
---     Every Worker query is scoped by to_username from the verified Accounts
---     session, so one user never sees another user's rows.
---   * Email Worker (service role key) -> inserts inbound mail.
+--   * Worker REST API (Mail service role key) -> reads/writes rows. Every API
+--     query is scoped by to_username from the verified Accounts session.
+--   * Inbound email handler -> checks the username with Accounts, then inserts
+--     into this Mail project. It does not query the Accounts database.
 --   * Browser -> NEVER talks to this table directly. It calls the Worker API.
 --
 -- Mailbox model: each row belongs to ONE mailbox, identified by to_username
@@ -19,8 +18,8 @@
 
 CREATE TABLE IF NOT EXISTS public.mail_messages (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  -- Accounts user id. Nullable on purpose: inbound mail arrives with no login.
-  user_id       UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+  -- Reserved and always NULL. Mail usernames do not map to Accounts auth user ids.
+  user_id       UUID,
   -- Mailbox owner = username part of username@APP_DOMAIN. Stored lowercase.
   to_username   TEXT NOT NULL CHECK (to_username = lower(to_username) AND length(to_username) BETWEEN 1 AND 64),
   from_email    TEXT NOT NULL,
@@ -50,6 +49,10 @@ ALTER TABLE public.mail_messages ADD COLUMN IF NOT EXISTS snippet TEXT;
 ALTER TABLE public.mail_messages ADD COLUMN IF NOT EXISTS cc_emails TEXT[] NOT NULL DEFAULT '{}';
 ALTER TABLE public.mail_messages ADD COLUMN IF NOT EXISTS bcc_emails TEXT[] NOT NULL DEFAULT '{}';
 
+-- Older drafts linked Mail rows to Accounts auth users; this project is separate now.
+ALTER TABLE public.mail_messages
+  DROP CONSTRAINT IF EXISTS mail_messages_user_id_fkey;
+
 -- Fast mailbox list: "newest first, in one folder, for one user".
 CREATE INDEX IF NOT EXISTS mail_messages_user_folder
   ON public.mail_messages (to_username, folder, received_at DESC);
@@ -70,7 +73,7 @@ ALTER TABLE public.mail_messages ENABLE ROW LEVEL SECURITY;
 -- rows for its own mailbox; with no policy it can read nothing.)
 REVOKE ALL ON public.mail_messages FROM anon;
 
--- Future-proofing: if a Supabase-Auth JWT ever carries a `preferred_username`
+-- Future-proofing: if a Mail Supabase JWT ever carries a `preferred_username`
 -- claim that matches the mailbox, that user may read their own rows directly.
 -- Until then this policy matches nothing, which is the safe default.
 DROP POLICY IF EXISTS "mail_select_own_mailbox" ON public.mail_messages;

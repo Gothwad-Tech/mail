@@ -6,13 +6,13 @@ your address comes from your username.
 - **Web app**: React + Vite + Tailwind PWA (`src/`).
 - **Mail Worker** (`worker/`): Cloudflare Worker. REST API under `/api/*`, plus the inbound
   Email handler.
-- **Storage**: Supabase, in the same project as Accounts (`supabase/mail.sql`).
+- **Storage**: Supabase in a separate Mail project (`supabase/mail.sql`).
 - **Outbound**: Resend, called only from the Worker.
 
 Folders: **Inbox, Starred, Sent, Drafts, Trash**.
 
-No demo data. Every message, name and address comes from the Worker, which gets them from
-the Accounts session and the database.
+No demo data. Mailbox ownership comes from the verified Accounts session; messages live in
+Mail's own database. Inbound addresses are checked through Accounts' internal API.
 
 ## Quick start (local)
 
@@ -35,7 +35,7 @@ local work you can set `DEV_AUTH_USERNAME` in `worker/.dev.vars` (development on
 | `npm run dev` | Web app (Vite, port 3000) |
 | `npm run build` | Production build into `dist/` |
 | `npm run lint` | Typecheck the web app and the Worker |
-| `npm run test:worker` | Worker tests (no network; 30 tests) |
+| `npm run test:worker` | Worker tests (no network) |
 | `npm run test:ui` | jsdom smoke test of the real app (needs the Worker running) |
 | `npm run worker:dev` | Worker locally (`wrangler dev`) |
 | `npm run worker:deploy` | Deploy the Worker |
@@ -43,15 +43,17 @@ local work you can set `DEV_AUTH_USERNAME` in `worker/.dev.vars` (development on
 ## Configuration
 
 Public settings are in `worker/wrangler.toml` (`APP_DOMAIN`, `AUTH_HUB_URL`, `MAIL_URL`,
-`SUPABASE_URL`, `DAILY_SEND_LIMIT`, `MAX_INBOUND_BYTES`). Keys are secrets:
-`SUPABASE_SERVICE_ROLE_KEY` and `RESEND_API_KEY`. Set them with `wrangler secret put`.
+`SUPABASE_URL`, `DAILY_SEND_LIMIT`, `MAX_INBOUND_BYTES`). Secrets are
+`ACCOUNTS_INTERNAL_TOKEN`, `SUPABASE_SERVICE_ROLE_KEY` and `RESEND_API_KEY`; set them with
+`wrangler secret put`.
 
 Nothing in the code hardcodes the domain. Fallback defaults may use `gothwadtech.com`.
 
 ## Deploy
 
-Follow **[docs/SETUP.md](docs/SETUP.md)**. It covers the Supabase SQL, the Accounts redirect
-SQL (for the Accounts owner), the Worker route, Email Routing, and the Resend domain.
+Follow **[docs/SETUP.md](docs/SETUP.md)**. It covers the separate Mail Supabase project,
+optional Accounts SSO SQL, Worker secrets and deployment. Do not enable Email Routing until
+the Accounts username endpoint is confirmed working.
 
 ## Docs
 
@@ -72,6 +74,6 @@ SQL (for the Accounts owner), the Worker route, Email Routing, and the Resend do
 ## Known limits
 
 - Attachments: only name, type and size are kept. The bytes are not stored yet.
-- Inbound is accounts-only: mail is kept only for usernames that exist in Accounts (`profiles`). Unknown names get a 550 bounce.
+- Inbound is accounts-only: mail is kept only when Accounts' internal username endpoint confirms the name. Unknown names get a 550 bounce; lookup failures get 451. Email Routing stays off until the endpoint is confirmed working.
 - No Undo for Trash. No restore from Trash yet.
 - Refresh is manual. There is no polling.

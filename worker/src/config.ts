@@ -5,8 +5,8 @@
 // company moves from gothwadtech.com to gothwad.in. We only keep fallback
 // defaults here so a missing var does not break the Worker silently.
 //
-// Secrets (SUPABASE_SERVICE_ROLE_KEY, RESEND_API_KEY) are set with
-// `wrangler secret put` or in the dashboard. Never put them in wrangler.toml.
+// Secrets (ACCOUNTS_INTERNAL_TOKEN, SUPABASE_SERVICE_ROLE_KEY, RESEND_API_KEY) are
+// set with `wrangler secret put` or in the dashboard. Never put them in wrangler.toml.
 // =============================================================================
 
 export interface Env {
@@ -24,6 +24,7 @@ export interface Env {
   DEV_AUTH_USERNAME?: string;
 
   // Secrets
+  ACCOUNTS_INTERNAL_TOKEN?: string;
   SUPABASE_SERVICE_ROLE_KEY?: string;
   RESEND_API_KEY?: string;
 }
@@ -33,6 +34,7 @@ export interface Config {
   authHubUrl: string;
   mailUrl: string;
   supabaseUrl: string;
+  accountsInternalToken: string | null;
   allowedOrigins: string[];
   isProduction: boolean;
   dailySendLimit: number;
@@ -67,6 +69,7 @@ export function readConfig(env: Env): Config {
     authHubUrl: stripTrailingSlash((env.AUTH_HUB_URL || DEFAULT_AUTH_HUB_URL).trim()),
     mailUrl,
     supabaseUrl: stripTrailingSlash((env.SUPABASE_URL || '').trim()),
+    accountsInternalToken: env.ACCOUNTS_INTERNAL_TOKEN?.trim() || null,
     allowedOrigins: [mailUrl, ...extraOrigins],
     isProduction,
     dailySendLimit: toPositiveInt(env.DAILY_SEND_LIMIT, 30),

@@ -15,29 +15,37 @@ Replace placeholders like `YOUR_PROJECT_REF`, `YOUR_DOMAIN` and `re_...` with yo
 | `AUTH_HUB_URL` | `https://accounts.gothwadtech.com` | `wrangler.toml` `[vars]` (public) |
 | `MAIL_URL` | `https://mail.gothwadtech.com` | `wrangler.toml` `[vars]` (public) |
 | `SUPABASE_URL` | `https://YOUR_PROJECT_REF.supabase.co` | `wrangler.toml` `[vars]` (public) |
-| `SUPABASE_SERVICE_ROLE_KEY` | `sb_secret_...` (or legacy `eyJ...`) | **secret** |
+| `SUPABASE_SERVICE_ROLE_KEY` | Mail project's `sb_secret_...` (or legacy `eyJ...`) | **secret** |
 | `RESEND_API_KEY` | `re_...` | **secret** |
+| `ACCOUNTS_INTERNAL_TOKEN` | Same value as Accounts' `MAIL_INTERNAL_TOKEN` | **secret** |
 
-The domain and URLs are not secrets. Keys are. Keys go in with `wrangler secret put`
-or in the Cloudflare dashboard, never in `wrangler.toml` or git.
+The domain and URLs are not secrets. Keys and the shared internal token are. Set them with
+`wrangler secret put` or in the Cloudflare dashboard, never in `wrangler.toml` or git. Do
+not paste the token into chat. The token value must match on the Accounts and Mail Workers.
 
 ---
 
-## 1. Supabase: create the mail table (same project as Accounts)
+## 1. Supabase: create a separate Mail project
 
-1. Open the Supabase dashboard for the **same project** that Gothwad Accounts uses.
-2. Go to **SQL Editor**. Paste the whole file `supabase/mail.sql` and run it once.
-   It is safe to run again.
+1. Create a new Supabase project for Gothwad Mail. Do not reuse the Accounts project.
+2. In this new project's **SQL Editor**, paste the whole file `supabase/mail.sql` and run
+   it. It is safe to run again.
 3. Check: the table `public.mail_messages` exists, and RLS is on.
+4. Save this Mail project's Project URL and service-role key for the Worker steps below.
+   Do not use the Accounts project's URL or key.
 
-The browser never talks to this table. The Worker does, with the service key.
+Mail does not read Accounts' `public.profiles`; the Worker stores `user_id` as null and uses
+the Accounts HTTP endpoint for inbound username checks. The browser never talks to Mail's
+table; only the Worker uses the Mail service key.
 
 ---
 
-## 2. Accounts: allow the Mail app to use its callback (SQL, for the Accounts owner)
+## 2. Accounts: optional `ecosystem_apps` SQL for cookie SSO
 
-> **This SQL is for a human to review and run in the Accounts Supabase project. It is NOT
-> run by the Mail project or by an agent.**
+> **Optional for the current cookie SSO flow.** This SQL is for a human to review and run
+> in the Accounts Supabase project, not the Mail project. An agent must not run it. The
+> cookie sign-in flow does not need `/auth/callback`; keep this only if you want the future
+> OAuth code flow's callback URI registered.
 
 ```sql
 UPDATE public.ecosystem_apps
@@ -76,17 +84,29 @@ npm install
 npx wrangler login            # opens a browser; do this yourself
 ```
 
-Set the two secrets (you will be asked to paste the value in your terminal):
+Set these Mail Worker secrets (Wrangler prompts for each value in your terminal):
 
 ```bash
 npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY --config worker/wrangler.toml
 npx wrangler secret put RESEND_API_KEY --config worker/wrangler.toml
+npx wrangler secret put ACCOUNTS_INTERNAL_TOKEN --config worker/wrangler.toml
 ```
+
+In the separate Accounts deployment, set `MAIL_INTERNAL_TOKEN` to the **same secret
+value** as Mail's `ACCOUNTS_INTERNAL_TOKEN`. Set it through the Accounts team's approved
+secret mechanism; never put it in either repo or paste it into chat.
 
 Edit `worker/wrangler.toml`:
 - Set `SUPABASE_URL` to your real project URL (replace `YOUR_PROJECT_REF`). The Worker
   refuses to call Supabase while the placeholder is still there.
 - Check `APP_DOMAIN`, `AUTH_HUB_URL` and `MAIL_URL`.
+
+The Mail Worker expects `GET {AUTH_HUB_URL}/api/internal/usernames/:username`, authenticated
+with `Authorization: Bearer <ACCOUNTS_INTERNAL_TOKEN>`. It expects `200 {"exists": true}` or
+`200 {"exists": false}`; any other status or invalid JSON causes a retryable 451. Accounts'
+`main` docs did not yet document this endpoint when this Mail integration was prepared, so
+this code follows the owner's supplied contract. If Accounts ships a different documented
+path or response, align the Mail code and tests before enabling Email Routing.
 
 Check the bundle, then deploy:
 
@@ -126,21 +146,43 @@ If `/api/health` returns HTML, the route is not matching. Fix the route order be
 
 ---
 
-## 5. Cloudflare: Email Routing (inbound)
+## 5. Confirm Accounts, then enable Email Routing (inbound)
 
-1. Dashboard → your zone (`gothwadtech.com`) → **Email → Email Routing**. Enable it. It
-   adds the MX and TXT records for you. If the domain already receives mail elsewhere,
-   read the warning first.
+**Do not enable Email Routing or add the catch-all until the Accounts endpoint is deployed,
+documented, and this check returns the expected 200 response.** The Accounts `main` docs did
+not yet document the endpoint when this Mail integration was prepared. The Worker currently
+follows the owner's supplied contract; if Accounts documents a different path or response,
+update and retest Mail before continuing.
+
+The Mail Worker expects
+`GET {AUTH_HUB_URL}/api/internal/usernames/:username`, with
+`Authorization: Bearer <ACCOUNTS_INTERNAL_TOKEN>`. A registered username should return
+`200 {"exists": true}`; an unknown one should return `200 {"exists": false}`. A 401 means
+the two secret values do not match or the Accounts secret is not set.
+
+Run this in your own shell after setting `AUTH_HUB_URL` to the value from
+`worker/wrangler.toml` and `USERNAME` to a real, lowercase Accounts username. The prompt
+reads the secret without echoing or putting it in shell history:
+
+```bash
+read -rsp 'MAIL_INTERNAL_TOKEN: ' MAIL_INTERNAL_TOKEN; printf '\n'
+curl -i -H "Authorization: Bearer $MAIL_INTERNAL_TOKEN" \
+  "$AUTH_HUB_URL/api/internal/usernames/$USERNAME"
+unset MAIL_INTERNAL_TOKEN
+```
+
+Only after it returns HTTP 200 with `{"exists": true}` for the known account:
+
+1. Dashboard → your zone → **Email → Email Routing**. Enable it. It adds the MX and TXT
+   records. If the domain already receives mail elsewhere, read the warning first.
 2. **Routing rules → Catch-all**: set the action to **Send to a Worker**, pick
    `gothwad-mail-api`.
 3. Send a test email to `YOUR_USERNAME@gothwadtech.com` from outside. It should appear in
-   the Inbox after a few seconds.
+   the Inbox.
 
-Unknown domains are rejected with 550. Oversized mail (over `MAX_INBOUND_BYTES`) is
-rejected with 552.
-
-> Inbound is accounts-only: a message to `name@YOUR_DOMAIN` is kept only if `name` is a
-> username in Accounts' `profiles` table. Unknown names bounce (550). See `PLAN.md`.
+Bad recipient shape or unknown Accounts usernames are rejected with 550. Accounts lookup
+failures (including missing token, timeout, non-200 and bad JSON) get 451 so the sender
+retries. Oversized mail (over `MAX_INBOUND_BYTES`) is rejected with 552.
 
 ---
 
@@ -180,7 +222,7 @@ Tests:
 ```bash
 npm run lint          # root and worker typecheck
 npm run build
-npm run test:worker   # 30 tests, no network
+npm run test:worker   # Worker tests, no network
 npm run test:ui       # jsdom smoke test; needs the Worker running and a signed-in cookie
 ```
 
@@ -192,13 +234,15 @@ Never paste a real session cookie into chat or into a committed file.
 
 ## Checklist
 
-- [ ] `supabase/mail.sql` run once in the Accounts project
-- [ ] Accounts `ecosystem_apps` SQL reviewed and run by the Accounts owner
-- [ ] Secrets set with `wrangler secret put` (not in files)
-- [ ] `SUPABASE_URL` in `wrangler.toml` is the real project URL
+- [ ] Separate Mail Supabase project created; `supabase/mail.sql` run there
+- [ ] Accounts `ecosystem_apps` SQL reviewed and run by the Accounts owner (optional for cookie SSO)
+- [ ] `ACCOUNTS_INTERNAL_TOKEN` (Mail) and `MAIL_INTERNAL_TOKEN` (Accounts) are the same secret
+- [ ] Mail service key and Resend key set with `wrangler secret put` (not in files)
+- [ ] `SUPABASE_URL` in `wrangler.toml` is the real Mail project URL
 - [ ] Worker deployed; `/api/health` answers from the Worker
 - [ ] Route `mail.gothwadtech.com/api/*` points at the Worker
 - [ ] Web app hosted on `mail.gothwadtech.com`
-- [ ] Email Routing on, catch-all sends to `gothwad-mail-api`
+- [ ] Accounts endpoint is documented and the human curl check returns the expected 200
+- [ ] Only after the endpoint check: Email Routing enabled and catch-all sends to `gothwad-mail-api`
 - [ ] Resend domain verified; send key set as a secret
 - [ ] Test: sign in, send to yourself, reply, star, trash

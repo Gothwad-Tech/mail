@@ -2,15 +2,16 @@
 // Inbound mail: Cloudflare Email Routing -> this Worker's email() handler.
 //
 // Flow:
-//   someone -> pawan@gothwadtech.com
+//   someone -> username@APP_DOMAIN
 //   -> Cloudflare Email Routing (catch-all *@APP_DOMAIN -> this Worker)
-//   -> domain check, size check, then "is this a real Gothwad account?"
-//      (accounts-only rule; reads public.profiles, see accountExists)
+//   -> domain check, size check, and username shape check
+//   -> ask Accounts whether the username exists
 //   -> parse MIME (postal-mime)
-//   -> insert one row into public.mail_messages (folder = 'inbox')
+//   -> insert one row into Mail's public.mail_messages (folder = 'inbox')
 //
-// Why SERVICE ROLE insert: there is no user session here. The email arrives
-// from the internet. The Worker decides which mailbox it belongs to.
+// Why the Accounts API: Mail has its own database and must not read Accounts'
+// profiles table. The email arrives from the internet, so this Worker decides
+// which mailbox it belongs to.
 //
 // Free-tier guards:
 //   - Messages above MAX_INBOUND_BYTES are rejected (SMTP 552).
@@ -19,7 +20,7 @@
 // =============================================================================
 
 import PostalMime from 'postal-mime';
-import type { Config } from './config';
+import type { Config, Env } from './config';
 import { Db } from './db';
 import { makeSnippet, AttachmentMeta, MAX_STORED_HTML_CHARS } from './mail';
 import { normalizeUsername } from './session';
@@ -52,37 +53,65 @@ export function localPartForDomain(address: string, appDomain: string): string |
   return local;
 }
 
-/**
- * Accounts-only rule: mail is kept only when the name is a real Gothwad user.
- * Why: without this, anyone could fill the database with mail to random names.
- *
- * We read public.profiles (the Accounts table, same Supabase project) with the
- * service key. This is a read of the shared database. It is NOT a call to a new
- * Accounts endpoint, because none exists for this yet.
- */
-async function accountExists(username: string, db: Db): Promise<boolean> {
-  const rows = await db.select<{ username: string }>('profiles', {
-    select: 'username',
-    username: `eq.${username}`,
-    limit: '1',
-  });
-  return rows.length > 0;
+const ACCOUNTS_LOOKUP_TIMEOUT_MS = 5000;
+
+/** Ask Accounts, not its database, whether this mailbox name is registered. */
+async function accountExists(username: string, config: Config): Promise<boolean> {
+  const token = config.accountsInternalToken;
+  if (!token) throw new Error('Accounts internal token is not configured');
+
+  let response: Response;
+  try {
+    response = await fetch(`${config.authHubUrl}/api/internal/usernames/${encodeURIComponent(username)}`, {
+      method: 'GET',
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: 'application/json',
+      },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(ACCOUNTS_LOOKUP_TIMEOUT_MS),
+    });
+  } catch {
+    // Network failures have no status code to log. Never log the address or token.
+    console.error('inbound_account_lookup_failed');
+    throw new Error('Accounts username lookup failed');
+  }
+
+  if (response.status !== 200) {
+    console.error('inbound_account_lookup_failed', response.status);
+    throw new Error('Accounts username lookup failed');
+  }
+
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    console.error('inbound_account_lookup_failed', response.status);
+    throw new Error('Accounts username lookup failed');
+  }
+
+  if (!body || typeof body !== 'object' || typeof (body as { exists?: unknown }).exists !== 'boolean') {
+    console.error('inbound_account_lookup_failed', response.status);
+    throw new Error('Accounts username lookup failed');
+  }
+
+  return (body as { exists: boolean }).exists;
 }
 
-export async function handleInbound(message: ForwardableEmailMessage, config: Config, db: Db): Promise<void> {
+export async function handleInbound(message: ForwardableEmailMessage, config: Config, env: Env): Promise<void> {
   const local = localPartForDomain(message.to, config.appDomain);
   if (!local) {
     message.setReject('550 5.1.1 Unknown recipient');
     return;
   }
 
-  // Cheap checks first: size is checked before any database call.
+  // Check the size cap before making any network request.
   if (message.rawSize > config.maxInboundBytes) {
     message.setReject('552 5.3.4 Message too large');
     return;
   }
 
-  // Bad name shapes are rejected without touching the database.
+  // Bad name shapes are rejected before calling Accounts.
   const username = normalizeUsername(local);
   if (!username) {
     message.setReject('550 5.1.1 Unknown recipient');
@@ -91,11 +120,9 @@ export async function handleInbound(message: ForwardableEmailMessage, config: Co
 
   let exists: boolean;
   try {
-    exists = await accountExists(username, db);
+    exists = await accountExists(username, config);
   } catch {
-    // Lookup failed (for example Supabase is down). Use a 4xx "try again later" so
-    // the sender retries and the mail is not lost. Never guess "exists".
-    console.error('inbound_account_lookup_failed');
+    // A failed lookup must be retried, never treated as proof that the name exists.
     message.setReject('451 4.3.0 Temporary failure, please retry later');
     return;
   }
@@ -118,9 +145,9 @@ export async function handleInbound(message: ForwardableEmailMessage, config: Co
   const bodyHtml = parsed.html ? truncate(parsed.html, MAX_STORED_HTML_CHARS) : null;
   const fromEmail = (parsed.from?.address || message.from || '').toLowerCase();
 
-  await db.insert('mail_messages', {
-    to_username: local,
-    user_id: null, // filled later if we ever map usernames to auth.users ids
+  await Db.from(env, config).insert('mail_messages', {
+    to_username: username,
+    user_id: null, // Mail does not map usernames to Accounts auth user ids
     folder: 'inbox',
     from_email: fromEmail || 'unknown@invalid',
     from_name: parsed.from?.name || null,

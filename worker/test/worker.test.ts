@@ -15,6 +15,7 @@ const ORIGINAL_FETCH = globalThis.fetch;
 const MAIL_ORIGIN = 'https://mail.test';
 const SB_KEY = 'sb_secret_TEST_ONLY';
 const LEGACY_JWT = 'eyJhbGciOiJIUzI1NiJ9.TEST.ONLY';
+const ACCOUNTS_TOKEN = 'mail_internal_TEST_ONLY';
 
 const baseEnv: Env = {
   APP_DOMAIN: 'gothwadtech.com',
@@ -22,6 +23,7 @@ const baseEnv: Env = {
   MAIL_URL: MAIL_ORIGIN,
   SUPABASE_URL: 'https://abcdefgh.supabase.co',
   ENVIRONMENT: 'production',
+  ACCOUNTS_INTERNAL_TOKEN: ACCOUNTS_TOKEN,
   SUPABASE_SERVICE_ROLE_KEY: SB_KEY,
   RESEND_API_KEY: 're_TEST_ONLY',
   DAILY_SEND_LIMIT: '2',
@@ -32,6 +34,7 @@ interface Seen {
   method: string;
   headers: Headers;
   body: string | null;
+  signal: AbortSignal | null;
 }
 
 let seen: Seen[] = [];
@@ -47,6 +50,7 @@ function installFetch() {
       method: (init?.method || 'GET').toUpperCase(),
       headers,
       body: typeof init?.body === 'string' ? init.body : null,
+      signal: init?.signal ?? null,
     };
     seen.push(s);
     return stub(s);
@@ -414,19 +418,20 @@ test('inbound routing only accepts our APP_DOMAIN, case-insensitive', () => {
   assert.equal(localPartForDomain('@gothwadtech.com', 'gothwadtech.com'), null);
 });
 
-/** Supabase stub for inbound: "pawan" is a real Accounts user, nobody else is. */
-function profilesStub(s: Seen): Response | null {
-  if (s.url.host === 'abcdefgh.supabase.co' && s.method === 'GET' && s.url.pathname === '/rest/v1/profiles') {
-    return Response.json(s.url.searchParams.get('username') === 'eq.pawan' ? [{ username: 'pawan' }] : []);
-  }
-  return null;
+/** Accounts stub for inbound: "pawan" exists, and other names do not. */
+function accountsUsernameStub(s: Seen): Response | null {
+  if (s.url.origin !== 'https://accounts.test' || s.method !== 'GET') return null;
+  const match = s.url.pathname.match(/^\/api\/internal\/usernames\/([^/]+)$/);
+  if (!match) return null;
+  const username = decodeURIComponent(match[1]);
+  return Response.json({ exists: username === 'pawan' });
 }
 
 test('inbound email: parses MIME, stores metadata only, drops attachment bytes', async () => {
   let inserted: Record<string, unknown> | null = null;
   stub = (s) => {
-    const profile = profilesStub(s);
-    if (profile) return profile;
+    const account = accountsUsernameStub(s);
+    if (account) return account;
     if (s.url.host === 'abcdefgh.supabase.co' && s.method === 'POST') {
       inserted = JSON.parse(s.body || '{}');
       return Response.json([{ id: 'in-1' }]);
@@ -536,30 +541,94 @@ function inboundMessage(to: string, rawSize = 100): { msg: ForwardableEmailMessa
   return { msg, rejected: () => rejected };
 }
 
-test('inbound email to a name that is not a Gothwad account is rejected and not stored', async () => {
-  // Accounts-only rule: random names on our domain must not fill the database.
-  stub = (s) => profilesStub(s) ?? new Response('x', { status: 599 });
+test('inbound email to an unknown Accounts username gets 550 and is not stored', async () => {
+  stub = (s) => accountsUsernameStub(s) ?? new Response('x', { status: 599 });
   const { msg, rejected } = inboundMessage('nobody-here@gothwadtech.com');
   await worker.email(msg, baseEnv);
   assert.match(rejected() ?? '', /^550 .*Unknown recipient/);
   assert.equal(seen.some((x) => x.method === 'POST'), false, 'no row inserted');
+  assert.equal(seen.some((x) => x.url.host === 'abcdefgh.supabase.co'), false, 'no Mail DB call');
 });
 
-test('inbound lookup failure asks the sender to retry (451) and stores nothing', async () => {
-  // Never guess "this user exists" when the database is down.
-  stub = (s) => (s.url.pathname === '/rest/v1/profiles' ? new Response('down', { status: 503 }) : new Response('x', { status: 599 }));
+test('inbound Accounts 401 gets 451 and is not stored', async () => {
+  stub = (s) =>
+    s.url.pathname.startsWith('/api/internal/usernames/')
+      ? Response.json({ error: 'unauthorized' }, { status: 401 })
+      : new Response('x', { status: 599 });
   const { msg, rejected } = inboundMessage('pawan@gothwadtech.com');
   await worker.email(msg, baseEnv);
-  assert.match(rejected() ?? '', /^451 /);
+  assert.match(rejected() ?? '', /^451 4\.3\.0 Temporary failure, please retry later/);
   assert.equal(seen.some((x) => x.method === 'POST'), false, 'no row inserted');
 });
 
-test('inbound name with a bad shape is rejected before any database call', async () => {
-  stub = (s) => profilesStub(s) ?? new Response('x', { status: 599 });
+test('inbound Accounts network failure gets 451 and is not stored', async () => {
+  stub = (s) => {
+    if (s.url.pathname.startsWith('/api/internal/usernames/')) return Promise.reject(new TypeError('network down'));
+    return new Response('x', { status: 599 });
+  };
+  const { msg, rejected } = inboundMessage('pawan@gothwadtech.com');
+  await worker.email(msg, baseEnv);
+  assert.match(rejected() ?? '', /^451 4\.3\.0 Temporary failure, please retry later/);
+  assert.equal(seen.some((x) => x.method === 'POST'), false, 'no row inserted');
+});
+
+test('inbound Accounts timeout gets 451 and is not stored', async () => {
+  stub = (s) => {
+    if (s.url.pathname.startsWith('/api/internal/usernames/')) {
+      assert.ok(s.signal instanceof AbortSignal, 'lookup has an abort timeout');
+      return Promise.reject(new DOMException('operation timed out', 'TimeoutError'));
+    }
+    return new Response('x', { status: 599 });
+  };
+  const { msg, rejected } = inboundMessage('pawan@gothwadtech.com');
+  await worker.email(msg, baseEnv);
+  assert.match(rejected() ?? '', /^451 4\.3\.0 Temporary failure, please retry later/);
+  assert.equal(seen.some((x) => x.method === 'POST'), false, 'no row inserted');
+});
+
+test('inbound Accounts bad JSON gets 451 and is not stored', async () => {
+  stub = (s) =>
+    s.url.pathname.startsWith('/api/internal/usernames/')
+      ? new Response('{not-json', { status: 200 })
+      : new Response('x', { status: 599 });
+  const { msg, rejected } = inboundMessage('pawan@gothwadtech.com');
+  await worker.email(msg, baseEnv);
+  assert.match(rejected() ?? '', /^451 4\.3\.0 Temporary failure, please retry later/);
+  assert.equal(seen.some((x) => x.method === 'POST'), false, 'no row inserted');
+});
+
+test('inbound missing Accounts token gets 451 without any request or insert', async () => {
+  stub = () => new Response('unexpected request', { status: 599 });
+  const { msg, rejected } = inboundMessage('pawan@gothwadtech.com');
+  const env: Env = { ...baseEnv, ACCOUNTS_INTERNAL_TOKEN: undefined };
+  await worker.email(msg, env);
+  assert.match(rejected() ?? '', /^451 4\.3\.0 Temporary failure, please retry later/);
+  assert.equal(seen.length, 0, 'no Accounts or Supabase call');
+});
+
+test('inbound sends the Accounts token only in the Authorization header', async () => {
+  stub = (s) => {
+    const account = accountsUsernameStub(s);
+    if (account) return account;
+    if (s.url.host === 'abcdefgh.supabase.co' && s.method === 'POST') return Response.json([{ id: 'in-1' }]);
+    return new Response('x', { status: 599 });
+  };
+  const { msg, rejected } = inboundMessage('Pawan@gothwadtech.com');
+  await worker.email(msg, baseEnv);
+  assert.equal(rejected(), null);
+  const lookup = seen.find((s) => s.url.pathname === '/api/internal/usernames/pawan');
+  assert.ok(lookup, 'Accounts username endpoint was called with the lowercased local part');
+  assert.equal(lookup.headers.get('authorization'), `Bearer ${ACCOUNTS_TOKEN}`);
+  assert.equal(lookup.url.search, '', 'the token is not in the query string');
+  assert.equal(lookup.url.href.includes(ACCOUNTS_TOKEN), false, 'the token is not in the URL');
+});
+
+test('inbound name with a bad shape is rejected before any Accounts call', async () => {
+  stub = (s) => accountsUsernameStub(s) ?? new Response('x', { status: 599 });
   const { msg, rejected } = inboundMessage('-bad@gothwadtech.com');
   await worker.email(msg, baseEnv);
   assert.match(rejected() ?? '', /^550 /);
-  assert.equal(seen.length, 0, 'no Supabase call at all');
+  assert.equal(seen.length, 0, 'no Accounts or Supabase call');
 });
 
 test('rotated Accounts cookies are passed to the browser; other cookies are dropped', async () => {
