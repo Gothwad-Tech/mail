@@ -6,10 +6,7 @@ import {
   SlidersHorizontal,
   Moon,
   Sun,
-  Database,
   Settings,
-  HardDrive,
-  ExternalLink,
 } from 'lucide-react';
 import { useMail } from '../context/MailContext';
 import { AccountSheet } from './AccountSheet';
@@ -30,10 +27,8 @@ export const Header: React.FC<HeaderProps> = ({ onToggleSidebar }) => {
     setIsSearchFilterOpen,
     theme,
     toggleTheme,
-    setIsSupabaseModalOpen,
     setIsSettingsModalOpen,
     setIsMobileNavOpen,
-    supabaseConfig,
     currentUser,
   } = useMail();
 
@@ -141,7 +136,7 @@ export const Header: React.FC<HeaderProps> = ({ onToggleSidebar }) => {
                     type="text"
                     value={searchFilter.from}
                     onChange={(e) => setSearchFilter({ ...searchFilter, from: e.target.value })}
-                    placeholder="e.g. notifications@supabase.io"
+                    placeholder="e.g. name@example.com"
                     className="w-full px-3 py-2 rounded-lg border border-neutral-200 dark:border-[#383838] bg-neutral-50 dark:bg-[#282828] focus:border-[#0494f4] focus:outline-none"
                   />
                 </div>
@@ -284,7 +279,7 @@ export const Header: React.FC<HeaderProps> = ({ onToggleSidebar }) => {
                     type="text"
                     value={searchFilter.from}
                     onChange={(e) => setSearchFilter({ ...searchFilter, from: e.target.value })}
-                    placeholder="e.g. notifications@supabase.io"
+                    placeholder="e.g. name@example.com"
                     className="col-span-2 w-full px-3 py-1.5 rounded-lg border border-neutral-200 dark:border-[#383838] bg-neutral-50 dark:bg-[#282828] focus:border-[#0494f4] focus:outline-none"
                   />
                 </div>
@@ -295,7 +290,7 @@ export const Header: React.FC<HeaderProps> = ({ onToggleSidebar }) => {
                     type="text"
                     value={searchFilter.to}
                     onChange={(e) => setSearchFilter({ ...searchFilter, to: e.target.value })}
-                    placeholder="e.g. pwngtwd@gmail.com"
+                    placeholder="e.g. name@example.com"
                     className="col-span-2 w-full px-3 py-1.5 rounded-lg border border-neutral-200 dark:border-[#383838] bg-neutral-50 dark:bg-[#282828] focus:border-[#0494f4] focus:outline-none"
                   />
                 </div>
@@ -356,23 +351,9 @@ export const Header: React.FC<HeaderProps> = ({ onToggleSidebar }) => {
           )}
         </div>
 
-        {/* Right Zone: Supabase, Theme, Settings, Profile */}
+        {/* Right Zone: Install app, Theme, Settings, Profile */}
         <div className="flex items-center gap-2 shrink-0">
           <PWAInstallButton />
-
-          <button
-            onClick={() => setIsSupabaseModalOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-neutral-200 dark:border-[#383838] hover:border-[#0494f4] dark:hover:border-[#0494f4] bg-neutral-50 dark:bg-[#282828] text-xs font-semibold text-neutral-700 dark:text-neutral-200 transition-colors"
-            title="Supabase Database Settings & SQL Schema"
-          >
-            <Database className="w-3.5 h-3.5 text-[#0494f4]" />
-            <span>Supabase</span>
-            <span
-              className={`w-2 h-2 rounded-full ${
-                supabaseConfig.isConnected ? 'bg-[#0494f4]' : 'bg-neutral-400 dark:bg-neutral-500'
-              }`}
-            />
-          </button>
 
           <button
             onClick={toggleTheme}

@@ -1,157 +1,193 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
-import {
-  EmailMessage,
-  EmailCategory,
-  EmailFolder,
-  ComposeData,
-  SupabaseConfig,
-  UserProfile,
-} from '../types/email';
-import { INITIAL_EMAILS } from '../data/mockEmails';
-import {
-  getStoredSupabaseConfig,
-  saveStoredSupabaseConfig,
-  loadLocalStoredEmails,
-  saveLocalStoredEmails,
-} from '../services/supabaseService';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { EmailMessage, EmailFolder, ComposeData, UserProfile } from '../types/email';
+import { ApiMessage, ApiError, mailApi, SessionUser } from '../services/mailApi';
 
 export interface SearchFilterOptions {
   from: string;
   to: string;
   subject: string;
   hasAttachment: boolean;
-  dateRange: string;
 }
+
+const EMPTY_FILTER: SearchFilterOptions = { from: '', to: '', subject: '', hasAttachment: false };
 
 interface ToastInfo {
   id: string;
   message: string;
-  actionText?: string;
-  onAction?: () => void;
 }
 
+export interface ComposeState {
+  isOpen: boolean;
+  isMinimized: boolean;
+  isMaximized: boolean;
+  data: ComposeData;
+}
+
+const EMPTY_COMPOSE: ComposeData = { to: [], cc: [], bcc: [], subject: '', body: '' };
+
 interface MailContextType {
+  // Mailbox data (from the Worker API)
   emails: EmailMessage[];
+  filteredEmails: EmailMessage[];
+  isLoadingEmails: boolean;
+  emailsError: string | null;
+  hasMore: boolean;
+  loadMore: () => void;
+  refreshEmails: () => void;
+
   currentFolder: EmailFolder;
   setCurrentFolder: (folder: EmailFolder) => void;
-  currentCategory: EmailCategory;
-  setCurrentCategory: (cat: EmailCategory) => void;
-  selectedLabel: string | null;
-  setSelectedLabel: (label: string | null) => void;
+
   searchQuery: string;
   setSearchQuery: (q: string) => void;
   searchFilter: SearchFilterOptions;
   setSearchFilter: (filter: SearchFilterOptions) => void;
   resetSearch: () => void;
+
   selectedEmailId: string | null;
   setSelectedEmailId: (id: string | null) => void;
   selectedEmail: EmailMessage | null;
+  isLoadingSelected: boolean;
   selectedIds: string[];
   toggleSelectId: (id: string) => void;
   selectAllIds: (ids: string[]) => void;
   clearSelection: () => void;
+
   toggleStar: (id: string) => void;
   markAsRead: (ids: string[], isRead: boolean) => void;
+  /** In Inbox/Sent/Drafts: move to Trash. In Trash: delete forever. */
   deleteEmails: (ids: string[]) => void;
-  archiveEmails: (ids: string[]) => void;
-  snoozeEmails: (ids: string[]) => void;
-  moveToFolder: (ids: string[], targetFolder: EmailFolder) => void;
-  addLabelToEmails: (ids: string[], label: string) => void;
-  removeLabelFromEmails: (ids: string[], label: string) => void;
+
   sendEmail: (data: ComposeData) => Promise<boolean>;
   saveDraft: (data: ComposeData) => void;
-  refreshEmails: () => void;
-  isRefreshing: boolean;
-  
+
   // Compose modal state
-  composeState: {
-    isOpen: boolean;
-    isMinimized: boolean;
-    isMaximized: boolean;
-    data: ComposeData;
-  };
+  composeState: ComposeState;
   openCompose: (initialData?: Partial<ComposeData>) => void;
+  /** Close the compose window and keep the draft (it stays in Drafts). */
   closeCompose: () => void;
+  /** Close and delete the draft on the server. */
+  discardCompose: () => void;
   minimizeCompose: () => void;
   maximizeCompose: () => void;
   setComposeData: (data: ComposeData) => void;
 
-  // View & UI Modals
+  // View & UI modals
   theme: 'light' | 'dark';
   toggleTheme: () => void;
   isMobileNavOpen: boolean;
   setIsMobileNavOpen: (open: boolean) => void;
-  isSupabaseModalOpen: boolean;
-  setIsSupabaseModalOpen: (open: boolean) => void;
   isSettingsModalOpen: boolean;
   setIsSettingsModalOpen: (open: boolean) => void;
   isSearchFilterOpen: boolean;
   setIsSearchFilterOpen: (open: boolean) => void;
   splitView: 'none' | 'vertical' | 'horizontal';
   setSplitView: (mode: 'none' | 'vertical' | 'horizontal') => void;
-  
-  // Custom Labels
-  labels: string[];
-  createLabel: (name: string) => void;
 
-  // Supabase
-  supabaseConfig: SupabaseConfig;
-  updateSupabaseConfig: (config: SupabaseConfig) => void;
-
-  // User Profile
+  // Signed-in user (from the Accounts session, via the Worker)
   currentUser: UserProfile;
+  sendRemainingToday: number | null;
+  dailySendLimit: number | null;
+  accountUrl: string;
 
   // Notifications
   toast: ToastInfo | null;
   dismissToast: () => void;
-  showToast: (message: string, actionText?: string, onAction?: () => void) => void;
-
-  // Computed counts
-  folderCounts: Record<EmailFolder, number>;
-  categoryCounts: Record<EmailCategory, number>;
-  filteredEmails: EmailMessage[];
+  showToast: (message: string) => void;
 }
 
 const MailContext = createContext<MailContextType | null>(null);
 
-const DEFAULT_USER: UserProfile = {
-  name: 'Pawan Gothwad',
-  email: 'pwngtwd@gmail.com',
-  avatarText: 'PG',
-  storageUsedGb: 1.2,
-  storageTotalGb: 15.0,
-};
+const PAGE_SIZE = 50;
 
-export const MailProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [emails, setEmails] = useState<EmailMessage[]>(() => loadLocalStoredEmails(INITIAL_EMAILS));
-  const [currentFolder, setCurrentFolder] = useState<EmailFolder>('inbox');
-  const [currentCategory, setCurrentCategory] = useState<EmailCategory>('primary');
-  const [selectedLabel, setSelectedLabel] = useState<string | null>(null);
+function initials(name: string | null, username: string): string {
+  const source = (name && name.trim()) || username;
+  const parts = source.split(/[\s._-]+/).filter(Boolean);
+  const letters = parts.length >= 2 ? parts[0][0] + parts[1][0] : source.slice(0, 2);
+  return letters.toUpperCase();
+}
+
+function formatListDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  return sameDay
+    ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Map the API shape to the shape the UI components use. */
+export function toEmailMessage(m: ApiMessage): EmailMessage {
+  return {
+    id: m.id,
+    senderName: m.from.name || m.from.email,
+    senderEmail: m.from.email,
+    toRecipients: m.to,
+    ccRecipients: m.cc,
+    bccRecipients: m.bcc,
+    subject: m.subject,
+    snippet: m.snippet,
+    bodyHtml: m.bodyHtml ?? '',
+    bodyText: m.bodyText ?? '',
+    timestamp: m.receivedAt,
+    dateFormatted: formatListDate(m.receivedAt),
+    isRead: m.isRead,
+    isStarred: m.isStarred,
+    isDraft: m.folder === 'drafts',
+    folder: m.folder,
+    attachments: m.attachments.map((a) => ({ name: a.name, size: formatBytes(a.size), type: a.type })),
+  };
+}
+
+function toComposeData(m: EmailMessage): ComposeData {
+  return {
+    id: m.id,
+    to: m.toRecipients,
+    cc: m.ccRecipients,
+    bcc: m.bccRecipients,
+    subject: m.subject,
+    body: m.bodyText,
+  };
+}
+
+function errorText(err: unknown): string {
+  if (err instanceof ApiError) return err.message;
+  return 'Something went wrong. Please try again.';
+}
+
+export const MailProvider: React.FC<{
+  user: SessionUser;
+  sendRemainingToday: number | null;
+  dailySendLimit: number | null;
+  accountUrl: string;
+  children: React.ReactNode;
+}> = ({ user, sendRemainingToday: initialRemaining, dailySendLimit, accountUrl, children }) => {
+  // ----- Mailbox state -------------------------------------------------------
+  const [emails, setEmails] = useState<EmailMessage[]>([]);
+  const [isLoadingEmails, setIsLoadingEmails] = useState(false);
+  const [emailsError, setEmailsError] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [currentFolder, setCurrentFolderState] = useState<EmailFolder>('inbox');
+  const [sendRemainingToday, setSendRemainingToday] = useState<number | null>(initialRemaining);
+
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchFilter, setSearchFilter] = useState<SearchFilterOptions>({
-    from: '',
-    to: '',
-    subject: '',
-    hasAttachment: false,
-    dateRange: 'all',
-  });
+  const [searchFilter, setSearchFilter] = useState<SearchFilterOptions>(EMPTY_FILTER);
   const [isSearchFilterOpen, setIsSearchFilterOpen] = useState(false);
+
   const [selectedEmailId, setSelectedEmailId] = useState<string | null>(null);
+  const [openedMessage, setOpenedMessage] = useState<EmailMessage | null>(null);
+  const [isLoadingSelected, setIsLoadingSelected] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Labels
-  const [labels, setLabels] = useState<string[]>([
-    'Personal',
-    'Work',
-    'Supabase Dev',
-    'Finance',
-    'Travel',
-  ]);
-
-  // Modals & responsive state
+  // ----- UI state ------------------------------------------------------------
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
-  const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [splitView, setSplitView] = useState<'none' | 'vertical' | 'horizontal'>('none');
 
@@ -169,7 +205,6 @@ export const MailProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return 'light';
   });
 
-  // Apply theme to document
   useEffect(() => {
     const root = document.documentElement;
     if (theme === 'dark') {
@@ -188,71 +223,58 @@ export const MailProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setTheme((prev) => (prev === 'light' ? 'dark' : 'light'));
   }, []);
 
-  // Supabase Configuration
-  const [supabaseConfig, setSupabaseConfigState] = useState<SupabaseConfig>(() =>
-    getStoredSupabaseConfig()
-  );
-
-  const updateSupabaseConfig = useCallback((newConfig: SupabaseConfig) => {
-    setSupabaseConfigState(newConfig);
-    saveStoredSupabaseConfig(newConfig);
-  }, []);
-
   // Toast
   const [toast, setToast] = useState<ToastInfo | null>(null);
 
-  const showToast = useCallback((message: string, actionText?: string, onAction?: () => void) => {
+  const showToast = useCallback((message: string) => {
     const id = Date.now().toString();
-    setToast({ id, message, actionText, onAction });
+    setToast({ id, message });
     setTimeout(() => {
       setToast((cur) => (cur?.id === id ? null : cur));
     }, 4500);
   }, []);
 
-  const dismissToast = useCallback(() => {
-    setToast(null);
-  }, []);
+  const dismissToast = useCallback(() => setToast(null), []);
 
-  // Compose State
-  const [composeState, setComposeState] = useState<{
-    isOpen: boolean;
-    isMinimized: boolean;
-    isMaximized: boolean;
-    data: ComposeData;
-  }>({
+  // ----- Compose state -------------------------------------------------------
+  const [composeState, setComposeState] = useState<ComposeState>({
     isOpen: false,
     isMinimized: false,
     isMaximized: false,
-    data: {
-      to: [],
-      cc: [],
-      bcc: [],
-      subject: '',
-      body: '',
-      attachments: [],
-      category: 'primary',
-    },
+    data: EMPTY_COMPOSE,
   });
 
+  // Refs used by the draft saver. They avoid stale closures in timers.
+  const composeOpenRef = useRef(false);
+  const draftIdRef = useRef<string | null>(null);
+  const lastDraftKeyRef = useRef<string>('');
+  const pendingDraftRef = useRef<ComposeData | null>(null);
+  const draftFlushingRef = useRef(false);
+
   const openCompose = useCallback((initialData?: Partial<ComposeData>) => {
-    setComposeState((prev) => ({
-      ...prev,
+    composeOpenRef.current = true;
+    draftIdRef.current = initialData?.id ?? null;
+    lastDraftKeyRef.current = JSON.stringify({ ...EMPTY_COMPOSE, ...initialData, id: undefined });
+    setComposeState({
       isOpen: true,
       isMinimized: false,
+      isMaximized: false,
       data: {
+        id: initialData?.id,
         to: initialData?.to || [],
         cc: initialData?.cc || [],
         bcc: initialData?.bcc || [],
         subject: initialData?.subject || '',
         body: initialData?.body || '',
-        attachments: initialData?.attachments || [],
-        category: initialData?.category || 'primary',
-        isScheduled: initialData?.isScheduled || false,
       },
-    }));
+    });
   }, []);
 
   const closeCompose = useCallback(() => {
+    composeOpenRef.current = false;
+    pendingDraftRef.current = null;
+    draftIdRef.current = null;
+    lastDraftKeyRef.current = '';
     setComposeState((prev) => ({ ...prev, isOpen: false }));
   }, []);
 
@@ -268,410 +290,317 @@ export const MailProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setComposeState((prev) => ({ ...prev, data }));
   }, []);
 
-  // Persist emails changes locally
-  const updateAndSaveEmails = useCallback((updated: EmailMessage[]) => {
-    setEmails(updated);
-    saveLocalStoredEmails(updated);
+  // ----- Loading the mailbox -------------------------------------------------
+  // A request counter makes sure an old, slow response never overwrites a newer folder.
+  const loadSeqRef = useRef(0);
+
+  const loadFolder = useCallback(async (folder: EmailFolder) => {
+    const seq = ++loadSeqRef.current;
+    setIsLoadingEmails(true);
+    setEmailsError(null);
+    try {
+      const res = await mailApi.listMessages(folder, { limit: PAGE_SIZE });
+      if (seq !== loadSeqRef.current) return;
+      setEmails(res.messages.map(toEmailMessage));
+      setHasMore(res.nextBefore !== null);
+    } catch (err) {
+      if (seq !== loadSeqRef.current) return;
+      setEmails([]);
+      setHasMore(false);
+      setEmailsError(errorText(err));
+    } finally {
+      if (seq === loadSeqRef.current) setIsLoadingEmails(false);
+    }
   }, []);
 
-  // Actions
-  const toggleSelectId = useCallback((id: string) => {
-    setSelectedIds((prev) =>
-      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
-    );
-  }, []);
+  useEffect(() => {
+    void loadFolder(currentFolder);
+  }, [currentFolder, loadFolder]);
 
-  const selectAllIds = useCallback((ids: string[]) => {
-    setSelectedIds(ids);
-  }, []);
+  const refreshEmails = useCallback(() => {
+    void loadFolder(currentFolder);
+  }, [currentFolder, loadFolder]);
 
-  const clearSelection = useCallback(() => {
+  const loadMore = useCallback(async () => {
+    const last = emails[emails.length - 1];
+    if (!last || isLoadingEmails) return;
+    setIsLoadingEmails(true);
+    try {
+      const res = await mailApi.listMessages(currentFolder, { limit: PAGE_SIZE, before: last.timestamp });
+      setEmails((prev) => [...prev, ...res.messages.map(toEmailMessage)]);
+      setHasMore(res.nextBefore !== null);
+    } catch (err) {
+      showToast(errorText(err));
+    } finally {
+      setIsLoadingEmails(false);
+    }
+  }, [emails, isLoadingEmails, currentFolder, showToast]);
+
+  const discardCompose = useCallback(() => {
+    const id = draftIdRef.current;
+    closeCompose();
+    if (id) {
+      mailApi.deleteDraft(id).catch(() => undefined);
+      if (currentFolder === 'drafts') void loadFolder('drafts');
+    }
+  }, [closeCompose, currentFolder, loadFolder]);
+
+  const setCurrentFolder = useCallback((folder: EmailFolder) => {
+    setCurrentFolderState(folder);
+    setSelectedEmailId(null);
     setSelectedIds([]);
+  }, []);
+
+  // ----- Opening a message ---------------------------------------------------
+  useEffect(() => {
+    if (!selectedEmailId) {
+      setOpenedMessage(null);
+      setIsLoadingSelected(false);
+      return;
+    }
+    let cancelled = false;
+    setIsLoadingSelected(true);
+    setOpenedMessage(null);
+    mailApi
+      .getMessage(selectedEmailId)
+      .then(({ message }) => {
+        if (cancelled) return;
+        const full = toEmailMessage(message);
+        setOpenedMessage(full);
+        setEmails((prev) => prev.map((e) => (e.id === full.id ? { ...e, isRead: full.isRead } : e)));
+        // Opening a message marks it read (same as most mail apps).
+        if (!message.isRead && message.folder !== 'drafts') {
+          mailApi.patchMessage(message.id, { isRead: true }).catch(() => undefined);
+          setOpenedMessage((prev) => (prev ? { ...prev, isRead: true } : prev));
+          setEmails((prev) => prev.map((e) => (e.id === full.id ? { ...e, isRead: true } : e)));
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) showToast(errorText(err));
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingSelected(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedEmailId, showToast]);
+
+  const selectedEmail = useMemo(() => {
+    if (!selectedEmailId) return null;
+    if (openedMessage && openedMessage.id === selectedEmailId) return openedMessage;
+    return emails.find((e) => e.id === selectedEmailId) ?? null;
+  }, [selectedEmailId, openedMessage, emails]);
+
+  // ----- Selection -----------------------------------------------------------
+  const toggleSelectId = useCallback((id: string) => {
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
+  }, []);
+
+  const selectAllIds = useCallback((ids: string[]) => setSelectedIds(ids), []);
+  const clearSelection = useCallback(() => setSelectedIds([]), []);
+
+  // ----- Message actions -----------------------------------------------------
+  const removeFromList = useCallback((ids: string[]) => {
+    setEmails((prev) => prev.filter((e) => !ids.includes(e.id)));
+    setSelectedIds((prev) => prev.filter((id) => !ids.includes(id)));
+    setSelectedEmailId((cur) => (cur && ids.includes(cur) ? null : cur));
   }, []);
 
   const toggleStar = useCallback(
     (id: string) => {
-      const updated = emails.map((msg) =>
-        msg.id === id ? { ...msg, isStarred: !msg.isStarred } : msg
-      );
-      updateAndSaveEmails(updated);
+      const current = emails.find((e) => e.id === id) ?? (openedMessage?.id === id ? openedMessage : null);
+      if (!current) return;
+      const next = !current.isStarred;
+      const apply = (value: boolean) => {
+        setEmails((prev) => prev.map((e) => (e.id === id ? { ...e, isStarred: value } : e)));
+        setOpenedMessage((prev) => (prev && prev.id === id ? { ...prev, isStarred: value } : prev));
+      };
+      apply(next);
+      mailApi.patchMessage(id, { isStarred: next }).catch((err: unknown) => {
+        apply(!next);
+        showToast(errorText(err));
+      });
+      // In the Starred view an unstarred mail should leave the list.
+      if (!next && currentFolder === 'starred') removeFromList([id]);
     },
-    [emails, updateAndSaveEmails]
+    [emails, openedMessage, currentFolder, showToast, removeFromList]
   );
 
   const markAsRead = useCallback(
     (ids: string[], isRead: boolean) => {
-      const updated = emails.map((msg) =>
-        ids.includes(msg.id) ? { ...msg, isRead } : msg
-      );
-      updateAndSaveEmails(updated);
+      setEmails((prev) => prev.map((e) => (ids.includes(e.id) ? { ...e, isRead } : e)));
+      setOpenedMessage((prev) => (prev && ids.includes(prev.id) ? { ...prev, isRead } : prev));
+      Promise.all(ids.map((id) => mailApi.patchMessage(id, { isRead }))).catch((err: unknown) => {
+        showToast(errorText(err));
+        void loadFolder(currentFolder);
+      });
+      setSelectedIds([]);
       showToast(isRead ? 'Marked as read' : 'Marked as unread');
     },
-    [emails, updateAndSaveEmails, showToast]
+    [currentFolder, loadFolder, showToast]
   );
 
   const deleteEmails = useCallback(
     (ids: string[]) => {
-      const prevEmails = [...emails];
-      const updated = emails.map((msg) =>
-        ids.includes(msg.id)
-          ? { ...msg, isDeleted: true, folder: 'trash' as EmailFolder }
-          : msg
-      );
-      updateAndSaveEmails(updated);
-      setSelectedIds([]);
-      if (selectedEmailId && ids.includes(selectedEmailId)) {
-        setSelectedEmailId(null);
+      if (ids.length === 0) return;
+      if (currentFolder === 'trash') {
+        const ok = window.confirm(
+          ids.length > 1 ? `Delete ${ids.length} messages forever? This cannot be undone.` : 'Delete this message forever? This cannot be undone.'
+        );
+        if (!ok) return;
+        removeFromList(ids);
+        Promise.all(ids.map((id) => mailApi.deleteTrashed(id))).catch((err: unknown) => {
+          showToast(errorText(err));
+          void loadFolder(currentFolder);
+        });
+        showToast(ids.length > 1 ? `${ids.length} messages deleted` : 'Message deleted');
+        return;
       }
-      showToast(
-        ids.length > 1 ? `${ids.length} conversations moved to Trash` : 'Conversation moved to Trash',
-        'Undo',
-        () => {
-          updateAndSaveEmails(prevEmails);
-        }
-      );
-    },
-    [emails, updateAndSaveEmails, selectedEmailId, showToast]
-  );
-
-  const archiveEmails = useCallback(
-    (ids: string[]) => {
-      const prevEmails = [...emails];
-      const updated = emails.map((msg) =>
-        ids.includes(msg.id)
-          ? { ...msg, isArchived: true, folder: 'archive' as EmailFolder }
-          : msg
-      );
-      updateAndSaveEmails(updated);
-      setSelectedIds([]);
-      if (selectedEmailId && ids.includes(selectedEmailId)) {
-        setSelectedEmailId(null);
-      }
-      showToast(
-        ids.length > 1 ? `${ids.length} conversations archived` : 'Conversation archived',
-        'Undo',
-        () => {
-          updateAndSaveEmails(prevEmails);
-        }
-      );
-    },
-    [emails, updateAndSaveEmails, selectedEmailId, showToast]
-  );
-
-  const snoozeEmails = useCallback(
-    (ids: string[]) => {
-      const updated = emails.map((msg) =>
-        ids.includes(msg.id)
-          ? { ...msg, isSnoozed: true, folder: 'snoozed' as EmailFolder }
-          : msg
-      );
-      updateAndSaveEmails(updated);
-      setSelectedIds([]);
-      showToast(ids.length > 1 ? `${ids.length} conversations snoozed` : 'Conversation snoozed');
-    },
-    [emails, updateAndSaveEmails, showToast]
-  );
-
-  const moveToFolder = useCallback(
-    (ids: string[], targetFolder: EmailFolder) => {
-      const updated = emails.map((msg) =>
-        ids.includes(msg.id) ? { ...msg, folder: targetFolder } : msg
-      );
-      updateAndSaveEmails(updated);
-      setSelectedIds([]);
-      showToast(`Moved to ${targetFolder}`);
-    },
-    [emails, updateAndSaveEmails, showToast]
-  );
-
-  const addLabelToEmails = useCallback(
-    (ids: string[], label: string) => {
-      const updated = emails.map((msg) => {
-        if (ids.includes(msg.id)) {
-          const currentLabels = msg.labels || [];
-          if (!currentLabels.includes(label)) {
-            return { ...msg, labels: [...currentLabels, label] };
-          }
-        }
-        return msg;
+      removeFromList(ids);
+      Promise.all(ids.map((id) => mailApi.patchMessage(id, { moveToTrash: true }))).catch((err: unknown) => {
+        showToast(errorText(err));
+        void loadFolder(currentFolder);
       });
-      updateAndSaveEmails(updated);
-      showToast(`Label "${label}" added`);
+      showToast(ids.length > 1 ? `${ids.length} conversations moved to Trash` : 'Conversation moved to Trash');
     },
-    [emails, updateAndSaveEmails, showToast]
+    [currentFolder, loadFolder, removeFromList, showToast]
   );
 
-  const removeLabelFromEmails = useCallback(
-    (ids: string[], label: string) => {
-      const updated = emails.map((msg) => {
-        if (ids.includes(msg.id)) {
-          return {
-            ...msg,
-            labels: (msg.labels || []).filter((l) => l !== label),
-          };
-        }
-        return msg;
-      });
-      updateAndSaveEmails(updated);
-    },
-    [emails, updateAndSaveEmails]
-  );
-
-  const createLabel = useCallback((name: string) => {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    setLabels((prev) => (prev.includes(trimmed) ? prev : [...prev, trimmed]));
-  }, []);
-
+  // ----- Compose: send and draft ---------------------------------------------
   const sendEmail = useCallback(
     async (data: ComposeData): Promise<boolean> => {
-      const newEmail: EmailMessage = {
-        id: `msg-${Date.now()}`,
-        threadId: `thread-${Date.now()}`,
-        senderName: 'Me',
-        senderEmail: 'pwngtwd@gmail.com',
-        toRecipients: data.to.length > 0 ? data.to : ['contact@example.com'],
-        ccRecipients: data.cc,
-        bccRecipients: data.bcc,
-        subject: data.subject || '(no subject)',
-        snippet: data.body ? data.body.substring(0, 90) : '',
-        bodyHtml: `
-          <div style="font-family: inherit; line-height: 1.6;">
-            ${data.body.replace(/\n/g, '<br/>')}
-          </div>
-        `,
-        bodyText: data.body,
-        timestamp: new Date().toISOString(),
-        dateFormatted: 'Just now',
-        isRead: true,
-        isStarred: false,
-        isSnoozed: false,
-        isArchived: false,
-        isDeleted: false,
-        isDraft: false,
-        isSpam: false,
-        category: data.category || 'primary',
-        folder: data.isScheduled ? 'scheduled' : 'sent',
-        labels: ['Work'],
-        attachments: data.attachments,
-        security: {
-          isEncrypted: true,
-          spfVerified: true,
-          dkimVerified: true,
-        },
-      };
-
-      const updated = [newEmail, ...emails];
-      updateAndSaveEmails(updated);
-      closeCompose();
-      showToast(
-        data.isScheduled ? 'Message scheduled to send' : 'Message sent',
-        'View message',
-        () => {
-          setCurrentFolder(data.isScheduled ? 'scheduled' : 'sent');
-          setSelectedEmailId(newEmail.id);
-        }
-      );
-      return true;
+      if (data.to.length === 0) {
+        showToast('Add at least one recipient.');
+        return false;
+      }
+      try {
+        const res = await mailApi.send({
+          to: data.to,
+          cc: data.cc,
+          bcc: data.bcc,
+          subject: data.subject,
+          body: data.body,
+          draftId: data.id ?? draftIdRef.current ?? undefined,
+        });
+        setSendRemainingToday(res.remainingToday);
+        closeCompose();
+        showToast('Message sent');
+        if (currentFolder === 'sent' || currentFolder === 'drafts') void loadFolder(currentFolder);
+        return true;
+      } catch (err) {
+        showToast(errorText(err));
+        return false;
+      }
     },
-    [emails, updateAndSaveEmails, closeCompose, showToast]
+    [closeCompose, currentFolder, loadFolder, showToast]
   );
+
+  /**
+   * Autosave. ComposeModal calls this on every change (debounced there).
+   * We only send a request when something actually changed, and we never run
+   * two saves at once, so a fast typist cannot create duplicate drafts.
+   */
+  const flushDrafts = useCallback(async () => {
+    if (draftFlushingRef.current) return;
+    draftFlushingRef.current = true;
+    try {
+      while (pendingDraftRef.current) {
+        const data = pendingDraftRef.current;
+        pendingDraftRef.current = null;
+        if (!composeOpenRef.current) break;
+
+        const key = JSON.stringify({ ...data, id: undefined });
+        if (key === lastDraftKeyRef.current) continue;
+
+        const isEmpty =
+          !data.subject.trim() && !data.body.trim() && data.to.length === 0 && data.cc.length === 0 && data.bcc.length === 0;
+        if (isEmpty) {
+          // Empty compose: remove the draft we made earlier, if any.
+          if (draftIdRef.current) {
+            const id = draftIdRef.current;
+            draftIdRef.current = null;
+            await mailApi.deleteDraft(id).catch(() => undefined);
+          }
+          lastDraftKeyRef.current = key;
+          continue;
+        }
+
+        try {
+          const { message } = await mailApi.saveDraft({ ...data, id: data.id ?? draftIdRef.current ?? undefined });
+          draftIdRef.current = message.id;
+          lastDraftKeyRef.current = key;
+          setComposeState((prev) => (prev.isOpen ? { ...prev, data: { ...prev.data, id: message.id } } : prev));
+        } catch (err) {
+          // Keep the text in the compose window. Show the error once.
+          showToast(errorText(err));
+        }
+      }
+    } finally {
+      draftFlushingRef.current = false;
+    }
+  }, [showToast]);
 
   const saveDraft = useCallback(
     (data: ComposeData) => {
-      if (!data.subject && !data.body && data.to.length === 0) return;
-      const draftId = data.id || `draft-${Date.now()}`;
-      const draftEmail: EmailMessage = {
-        id: draftId,
-        threadId: `thread-${draftId}`,
-        senderName: 'Draft',
-        senderEmail: 'pwngtwd@gmail.com',
-        toRecipients: data.to,
-        subject: data.subject ? `Draft: ${data.subject}` : 'Draft (no subject)',
-        snippet: data.body ? data.body.substring(0, 90) : 'Draft message',
-        bodyHtml: `<div style="font-family: inherit;">${data.body.replace(/\n/g, '<br/>')}</div>`,
-        bodyText: data.body,
-        timestamp: new Date().toISOString(),
-        dateFormatted: 'Draft',
-        isRead: true,
-        isStarred: false,
-        isSnoozed: false,
-        isArchived: false,
-        isDeleted: false,
-        isDraft: true,
-        isSpam: false,
-        category: data.category || 'primary',
-        folder: 'drafts',
-        labels: [],
-        attachments: data.attachments,
-      };
-
-      const filtered = emails.filter((e) => e.id !== draftId);
-      updateAndSaveEmails([draftEmail, ...filtered]);
+      if (!composeOpenRef.current) return;
+      pendingDraftRef.current = data;
+      void flushDrafts();
     },
-    [emails, updateAndSaveEmails]
+    [flushDrafts]
   );
 
-  const refreshEmails = useCallback(() => {
-    setIsRefreshing(true);
-    setTimeout(() => {
-      setIsRefreshing(false);
-      showToast('Mailbox up to date');
-    }, 600);
-  }, [showToast]);
-
+  // ----- Search --------------------------------------------------------------
   const resetSearch = useCallback(() => {
     setSearchQuery('');
-    setSearchFilter({
-      from: '',
-      to: '',
-      subject: '',
-      hasAttachment: false,
-      dateRange: 'all',
-    });
+    setSearchFilter(EMPTY_FILTER);
     setIsSearchFilterOpen(false);
   }, []);
 
-  // Filtered Emails computation
+  // Search runs on the list already loaded (fast, no extra API calls).
   const filteredEmails = useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    const f = searchFilter;
     return emails.filter((email) => {
-      // 1. Folder check
-      if (currentFolder === 'starred') {
-        if (!email.isStarred || email.isDeleted) return false;
-      } else if (currentFolder === 'snoozed') {
-        if (!email.isSnoozed || email.isDeleted) return false;
-      } else if (currentFolder === 'sent') {
-        if (email.folder !== 'sent' || email.isDeleted) return false;
-      } else if (currentFolder === 'drafts') {
-        if (!email.isDraft || email.isDeleted) return false;
-      } else if (currentFolder === 'important') {
-        if (!email.isImportant || email.isDeleted) return false;
-      } else if (currentFolder === 'scheduled') {
-        if (email.folder !== 'scheduled' || email.isDeleted) return false;
-      } else if (currentFolder === 'spam') {
-        if (!email.isSpam) return false;
-      } else if (currentFolder === 'trash') {
-        if (!email.isDeleted) return false;
-      } else if (currentFolder === 'archive') {
-        if (!email.isArchived || email.isDeleted) return false;
-      } else if (currentFolder === 'all') {
-        if (email.isDeleted && email.folder !== 'trash') return false;
-      } else {
-        // Default: 'inbox'
-        if (email.folder !== 'inbox' || email.isDeleted || email.isArchived) return false;
-        // In inbox, also filter by category unless searching or label selected
-        if (!selectedLabel && !searchQuery.trim()) {
-          if (email.category !== currentCategory) return false;
-        }
-      }
-
-      // 2. Custom label filter
-      if (selectedLabel) {
-        if (!email.labels || !email.labels.includes(selectedLabel)) return false;
-      }
-
-      // 3. Search text query
-      const q = searchQuery.toLowerCase().trim();
       if (q) {
-        const matchesSender = email.senderName.toLowerCase().includes(q) || email.senderEmail.toLowerCase().includes(q);
-        const matchesSubject = email.subject.toLowerCase().includes(q);
-        const matchesSnippet = email.snippet.toLowerCase().includes(q);
-        const matchesBody = email.bodyText.toLowerCase().includes(q);
-        const matchesRecipients = email.toRecipients.some((r) => r.toLowerCase().includes(q));
-        if (!matchesSender && !matchesSubject && !matchesSnippet && !matchesBody && !matchesRecipients) {
-          return false;
-        }
+        const hit =
+          email.senderName.toLowerCase().includes(q) ||
+          email.senderEmail.toLowerCase().includes(q) ||
+          email.subject.toLowerCase().includes(q) ||
+          email.snippet.toLowerCase().includes(q) ||
+          email.toRecipients.some((r) => r.toLowerCase().includes(q));
+        if (!hit) return false;
       }
-
-      // 4. Advanced search filters
-      if (searchFilter.from && !email.senderEmail.toLowerCase().includes(searchFilter.from.toLowerCase())) {
-        return false;
-      }
-      if (searchFilter.to && !email.toRecipients.some((r) => r.toLowerCase().includes(searchFilter.to.toLowerCase()))) {
-        return false;
-      }
-      if (searchFilter.subject && !email.subject.toLowerCase().includes(searchFilter.subject.toLowerCase())) {
-        return false;
-      }
-      if (searchFilter.hasAttachment && (!email.attachments || email.attachments.length === 0)) {
-        return false;
-      }
-
+      if (f.from && !email.senderEmail.toLowerCase().includes(f.from.toLowerCase())) return false;
+      if (f.to && !email.toRecipients.some((r) => r.toLowerCase().includes(f.to.toLowerCase()))) return false;
+      if (f.subject && !email.subject.toLowerCase().includes(f.subject.toLowerCase())) return false;
+      if (f.hasAttachment && email.attachments.length === 0) return false;
       return true;
     });
-  }, [emails, currentFolder, currentCategory, selectedLabel, searchQuery, searchFilter]);
+  }, [emails, searchQuery, searchFilter]);
 
-  // Compute counts
-  const folderCounts = useMemo(() => {
-    const counts: Record<EmailFolder, number> = {
-      inbox: 0,
-      starred: 0,
-      snoozed: 0,
-      sent: 0,
-      drafts: 0,
-      important: 0,
-      scheduled: 0,
-      all: 0,
-      spam: 0,
-      trash: 0,
-      archive: 0,
-    };
-
-    emails.forEach((e) => {
-      if (!e.isDeleted) {
-        if (e.folder === 'inbox' && !e.isArchived && !e.isRead) counts.inbox += 1;
-        if (e.isStarred) counts.starred += 1;
-        if (e.isSnoozed) counts.snoozed += 1;
-        if (e.isDraft) counts.drafts += 1;
-        if (e.isImportant) counts.important += 1;
-        if (e.folder === 'sent') counts.sent += 1;
-        if (e.folder === 'scheduled') counts.scheduled += 1;
-        if (e.folder === 'archive') counts.archive += 1;
-        counts.all += 1;
-      } else {
-        counts.trash += 1;
-      }
-      if (e.isSpam) counts.spam += 1;
-    });
-
-    return counts;
-  }, [emails]);
-
-  const categoryCounts = useMemo(() => {
-    const counts: Record<EmailCategory, number> = {
-      primary: 0,
-      social: 0,
-      promotions: 0,
-      updates: 0,
-      forums: 0,
-    };
-
-    emails.forEach((e) => {
-      if (e.folder === 'inbox' && !e.isDeleted && !e.isArchived && !e.isRead) {
-        if (counts[e.category] !== undefined) {
-          counts[e.category] += 1;
-        }
-      }
-    });
-
-    return counts;
-  }, [emails]);
-
-  const selectedEmail = useMemo(() => {
-    if (!selectedEmailId) return null;
-    return emails.find((e) => e.id === selectedEmailId) || null;
-  }, [emails, selectedEmailId]);
+  const currentUser: UserProfile = useMemo(
+    () => ({
+      username: user.username,
+      name: user.name,
+      email: user.email,
+      avatarText: initials(user.name, user.username),
+    }),
+    [user]
+  );
 
   return (
     <MailContext.Provider
       value={{
         emails,
+        filteredEmails,
+        isLoadingEmails,
+        emailsError,
+        hasMore,
+        loadMore,
+        refreshEmails,
         currentFolder,
         setCurrentFolder,
-        currentCategory,
-        setCurrentCategory,
-        selectedLabel,
-        setSelectedLabel,
         searchQuery,
         setSearchQuery,
         searchFilter,
@@ -680,6 +609,7 @@ export const MailProvider: React.FC<{ children: React.ReactNode }> = ({ children
         selectedEmailId,
         setSelectedEmailId,
         selectedEmail,
+        isLoadingSelected,
         selectedIds,
         toggleSelectId,
         selectAllIds,
@@ -687,18 +617,12 @@ export const MailProvider: React.FC<{ children: React.ReactNode }> = ({ children
         toggleStar,
         markAsRead,
         deleteEmails,
-        archiveEmails,
-        snoozeEmails,
-        moveToFolder,
-        addLabelToEmails,
-        removeLabelFromEmails,
         sendEmail,
         saveDraft,
-        refreshEmails,
-        isRefreshing,
         composeState,
         openCompose,
         closeCompose,
+        discardCompose,
         minimizeCompose,
         maximizeCompose,
         setComposeData,
@@ -706,25 +630,19 @@ export const MailProvider: React.FC<{ children: React.ReactNode }> = ({ children
         toggleTheme,
         isMobileNavOpen,
         setIsMobileNavOpen,
-        isSupabaseModalOpen,
-        setIsSupabaseModalOpen,
         isSettingsModalOpen,
         setIsSettingsModalOpen,
         isSearchFilterOpen,
         setIsSearchFilterOpen,
         splitView,
         setSplitView,
-        labels,
-        createLabel,
-        supabaseConfig,
-        updateSupabaseConfig,
-        currentUser: DEFAULT_USER,
+        currentUser,
+        sendRemainingToday,
+        dailySendLimit,
+        accountUrl,
         toast,
         dismissToast,
         showToast,
-        folderCounts,
-        categoryCounts,
-        filteredEmails,
       }}
     >
       {children}
@@ -739,3 +657,6 @@ export const useMail = (): MailContextType => {
   }
   return context;
 };
+
+// Exported for the compose "open a draft" flow in EmailList.
+export { toComposeData };

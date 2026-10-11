@@ -1,10 +1,13 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import {defineConfig} from 'vite';
+import {defineConfig, loadEnv} from 'vite';
 import {VitePWA} from 'vite-plugin-pwa';
 
-export default defineConfig(() => {
+export default defineConfig(({mode}) => {
+  // Read VITE_* values from .env files (see .env.example). loadEnv is needed because
+  // Vite only puts VITE_* values into import.meta.env for browser code, not into this config.
+  const env = loadEnv(mode, process.cwd(), 'VITE_');
   return {
     plugins: [
       react(),
@@ -26,7 +29,7 @@ export default defineConfig(() => {
           name: 'Gothwad Mail',
           short_name: 'GothwadMail',
           description:
-            'Fast, modern desktop and mobile email client with Gmail-style workflows, customizable themes, and seamless Supabase database synchronization.',
+            'Fast, modern desktop and mobile webmail for your Gothwad address, signed in with Gothwad Accounts.',
           theme_color: '#0494f4',
           background_color: '#ffffff',
           display: 'standalone',
@@ -101,6 +104,15 @@ export default defineConfig(() => {
       host: '0.0.0.0',
       port: 3000,
       allowedHosts: true as const,
+      // Dev only: /api goes to the local Mail Worker (`npm run worker:dev`).
+      // The browser keeps calling same-origin /api, just like production.
+      // The target is a server-side setting, so 127.0.0.1 never reaches the browser.
+      proxy: {
+        '/api': {
+          target: env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:8787',
+          changeOrigin: false,
+        },
+      },
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',

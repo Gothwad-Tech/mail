@@ -1,20 +1,17 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   Minus,
   Maximize2,
   Minimize2,
-  Paperclip,
   Send,
   Trash2,
   ArrowLeft,
-  ChevronDown,
   List,
   Quote,
   MoreVertical,
 } from 'lucide-react';
 import { useMail } from '../context/MailContext';
-import { EmailAttachment } from '../types/email';
 
 export const ComposeModal: React.FC = () => {
   const {
@@ -25,6 +22,7 @@ export const ComposeModal: React.FC = () => {
     setComposeData,
     sendEmail,
     saveDraft,
+    discardCompose,
     currentUser,
   } = useMail();
 
@@ -33,9 +31,7 @@ export const ComposeModal: React.FC = () => {
   const [showBcc, setShowBcc] = useState(false);
   const [ccInput, setCcInput] = useState('');
   const [bccInput, setBccInput] = useState('');
-  const [isScheduleMenuOpen, setIsScheduleMenuOpen] = useState(false);
   const [isSending, setIsSending] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data, isOpen, isMinimized, isMaximized } = composeState;
 
@@ -82,24 +78,7 @@ export const ComposeModal: React.FC = () => {
     }
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-
-    const newAttachments: EmailAttachment[] = Array.from(files).map((f) => ({
-      id: `att-${Date.now()}-${f.name}`,
-      name: f.name,
-      size: `${(f.size / 1024).toFixed(1)} KB`,
-      type: f.name.endsWith('.pdf') ? 'pdf' : f.name.endsWith('.png') || f.name.endsWith('.jpg') ? 'image' : 'doc',
-    }));
-
-    setComposeData({
-      ...data,
-      attachments: [...data.attachments, ...newAttachments],
-    });
-  };
-
-  const handleSend = async (isScheduled: boolean = false) => {
+  const handleSend = async () => {
     const finalTo = [...data.to];
     if (toInput.trim() && !finalTo.includes(toInput.trim())) {
       finalTo.push(toInput.trim());
@@ -114,7 +93,6 @@ export const ComposeModal: React.FC = () => {
     await sendEmail({
       ...data,
       to: finalTo,
-      isScheduled,
     });
     setIsSending(false);
   };
@@ -151,15 +129,7 @@ export const ComposeModal: React.FC = () => {
 
         <div className="flex items-center gap-1">
           <button
-            onClick={() => fileInputRef.current?.click()}
-            className="w-10 h-10 flex items-center justify-center rounded-full text-neutral-600 dark:text-neutral-300"
-            aria-label="Attach file"
-          >
-            <Paperclip className="w-5 h-5" />
-          </button>
-
-          <button
-            onClick={() => handleSend(false)}
+            onClick={() => handleSend()}
             disabled={isSending}
             className="w-10 h-10 flex items-center justify-center rounded-full text-[#0494f4] disabled:opacity-50"
             aria-label="Send email"
@@ -359,98 +329,25 @@ export const ComposeModal: React.FC = () => {
             />
           </div>
 
-          {/* Attached Files List */}
-          {data.attachments.length > 0 && (
-            <div className="px-4 py-2 border-t border-neutral-100 dark:border-[#2e2e2e] flex flex-wrap gap-2">
-              {data.attachments.map((att) => (
-                <div
-                  key={att.id}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-neutral-200 dark:border-[#383838] bg-neutral-50 dark:bg-[#282828] text-xs"
-                >
-                  <Paperclip className="w-3 h-3 text-[#0494f4]" />
-                  <span className="font-medium text-neutral-800 dark:text-neutral-200 truncate max-w-[120px]">
-                    {att.name}
-                  </span>
-                  <span className="text-[10px] text-neutral-400 font-mono">{att.size}</span>
-                  <button
-                    onClick={() =>
-                      setComposeData({
-                        ...data,
-                        attachments: data.attachments.filter((a) => a.id !== att.id),
-                      })
-                    }
-                    className="p-0.5 text-neutral-400 hover:text-neutral-900"
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Hidden File Input */}
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleFileUpload}
-            multiple
-            className="hidden"
-          />
-
           {/* Desktop Bottom Toolbar */}
           <div className="hidden sm:flex px-4 py-2.5 border-t border-neutral-200 dark:border-[#333333] items-center justify-between bg-neutral-50/60 dark:bg-[#262626]">
             <div className="flex items-center gap-2">
               <div className="inline-flex rounded-xl overflow-hidden shadow-sm shadow-[#0494f4]/20">
                 <button
                   type="button"
-                  onClick={() => handleSend(false)}
+                  onClick={() => handleSend()}
                   disabled={isSending}
                   className="flex items-center gap-2 px-5 py-2.5 bg-[#0494f4] hover:bg-[#0382d6] text-white text-xs font-bold transition-colors disabled:opacity-50"
                 >
                   <Send className="w-3.5 h-3.5" />
                   <span>Send</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setIsScheduleMenuOpen(!isScheduleMenuOpen)}
-                  className="px-2 py-2.5 bg-[#0494f4] hover:bg-[#0382d6] border-l border-white/20 text-white"
-                  title="Schedule send"
-                >
-                  <ChevronDown className="w-3.5 h-3.5" />
-                </button>
               </div>
-
-              {isScheduleMenuOpen && (
-                <div className="absolute left-6 bottom-14 w-48 bg-white dark:bg-[#2a2a2a] border border-neutral-200 dark:border-[#383838] rounded-xl shadow-xl py-1.5 z-50 text-xs">
-                  <span className="block px-3 py-1 font-semibold text-neutral-400 text-[10px] uppercase">
-                    Schedule Send
-                  </span>
-                  <button
-                    onClick={() => {
-                      setIsScheduleMenuOpen(false);
-                      handleSend(true);
-                    }}
-                    className="w-full text-left px-3 py-2 hover:bg-neutral-100 dark:hover:bg-[#333333] flex items-center justify-between"
-                  >
-                    <span>Tomorrow morning</span>
-                    <span className="text-[10px] text-neutral-400 font-mono">8:00 AM</span>
-                  </button>
-                </div>
-              )}
-
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="p-1.5 rounded-lg hover:bg-neutral-200 dark:hover:bg-[#383838] text-[#0494f4]"
-                title="Attach files"
-              >
-                <Paperclip className="w-4 h-4" />
-              </button>
             </div>
 
             <button
               type="button"
-              onClick={closeCompose}
+              onClick={discardCompose}
               className="p-2 rounded-lg hover:bg-neutral-200 dark:hover:bg-[#383838] text-neutral-500"
               title="Discard draft"
             >

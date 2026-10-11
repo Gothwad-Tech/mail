@@ -1,24 +1,20 @@
 import React from 'react';
-import { Mail, Star, Send, PenTool, Database } from 'lucide-react';
+import { Mail, Star, Send, PenTool, FileText } from 'lucide-react';
 import { useMail } from '../context/MailContext';
 
 export const MobileBottomNav: React.FC = () => {
   const {
     currentFolder,
     setCurrentFolder,
-    setSelectedLabel,
     openCompose,
-    setIsSupabaseModalOpen,
-    folderCounts,
     selectedEmailId,
   } = useMail();
 
   // If user is reading an email in mobile view, don't obstruct the reading experience
   if (selectedEmailId) return null;
 
-  const handleNav = (folder: 'inbox' | 'starred' | 'sent') => {
+  const handleNav = (folder: 'inbox' | 'starred' | 'sent' | 'drafts') => {
     setCurrentFolder(folder);
-    setSelectedLabel(null);
   };
 
   return (
@@ -51,11 +47,6 @@ export const MobileBottomNav: React.FC = () => {
         >
           <div className="relative">
             <Mail className="w-5 h-5" />
-            {folderCounts.inbox > 0 && (
-              <span className="absolute -top-1 -right-2 min-w-4 h-4 px-1 rounded-full bg-[#0494f4] text-white text-[10px] font-bold flex items-center justify-center">
-                {folderCounts.inbox}
-              </span>
-            )}
           </div>
           <span className="text-[10px] font-bold mt-1 tracking-tight">Mail</span>
         </button>
@@ -86,13 +77,17 @@ export const MobileBottomNav: React.FC = () => {
           <span className="text-[10px] font-bold mt-1 tracking-tight">Sent</span>
         </button>
 
-        {/* Supabase */}
+        {/* Drafts */}
         <button
-          onClick={() => setIsSupabaseModalOpen(true)}
-          className="flex flex-col items-center justify-center flex-1 h-full min-h-[48px] text-neutral-500 dark:text-neutral-400 hover:text-[#0494f4] transition-colors"
+          onClick={() => handleNav('drafts')}
+          className={`flex flex-col items-center justify-center flex-1 h-full min-h-[48px] transition-colors ${
+            currentFolder === 'drafts'
+              ? 'text-[#0494f4]'
+              : 'text-neutral-500 dark:text-neutral-400'
+          }`}
         >
-          <Database className="w-5 h-5 text-[#0494f4]" />
-          <span className="text-[10px] font-bold mt-1 tracking-tight">Supabase</span>
+          <FileText className="w-5 h-5" />
+          <span className="text-[10px] font-bold mt-1 tracking-tight">Drafts</span>
         </button>
       </nav>
     </>

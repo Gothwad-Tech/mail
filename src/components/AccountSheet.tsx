@@ -1,15 +1,5 @@
 import React from 'react';
-import {
-  X,
-  HardDrive,
-  Database,
-  Settings,
-  Sun,
-  Moon,
-  ExternalLink,
-  ShieldCheck,
-  Check,
-} from 'lucide-react';
+import { X, Settings, Sun, Moon, ExternalLink, ShieldCheck } from 'lucide-react';
 import { useMail } from '../context/MailContext';
 import { PWAInstallButton } from './PWAInstallButton';
 
@@ -19,14 +9,7 @@ interface AccountSheetProps {
 }
 
 export const AccountSheet: React.FC<AccountSheetProps> = ({ isOpen, onClose }) => {
-  const {
-    currentUser,
-    theme,
-    toggleTheme,
-    setIsSupabaseModalOpen,
-    setIsSettingsModalOpen,
-    supabaseConfig,
-  } = useMail();
+  const { currentUser, theme, toggleTheme, setIsSettingsModalOpen, accountUrl } = useMail();
 
   if (!isOpen) return null;
 
@@ -61,7 +44,7 @@ export const AccountSheet: React.FC<AccountSheetProps> = ({ isOpen, onClose }) =
           </div>
           <div className="min-w-0 flex-1">
             <h3 className="font-bold text-sm text-neutral-900 dark:text-white truncate">
-              {currentUser.name}
+              {currentUser.name || currentUser.username}
             </h3>
             <p className="text-xs text-neutral-500 dark:text-neutral-400 truncate">
               {currentUser.email}
@@ -75,58 +58,20 @@ export const AccountSheet: React.FC<AccountSheetProps> = ({ isOpen, onClose }) =
           </div>
         </div>
 
-        {/* Storage Bar */}
-        <div className="p-3.5 rounded-2xl bg-neutral-50 dark:bg-[#282828] border border-neutral-200 dark:border-[#333333] mb-4">
-          <div className="flex items-center justify-between text-xs text-neutral-600 dark:text-neutral-400 mb-2">
-            <span className="flex items-center gap-1.5 font-medium">
-              <HardDrive className="w-4 h-4 text-[#0494f4]" />
-              Account Storage
-            </span>
-            <span className="font-mono tabular-nums text-[11px]">
-              {currentUser.storageUsedGb} GB of {currentUser.storageTotalGb} GB used
-            </span>
-          </div>
-          <div className="w-full h-2 bg-neutral-200 dark:bg-[#383838] rounded-full overflow-hidden">
-            <div
-              className="h-full bg-[#0494f4] rounded-full transition-all"
-              style={{
-                width: `${(currentUser.storageUsedGb / currentUser.storageTotalGb) * 100}%`,
-              }}
-            />
-          </div>
-        </div>
-
         {/* Quick Actions List */}
         <div className="space-y-1.5">
           <PWAInstallButton className="w-full justify-center py-2.5" />
 
-          {/* Supabase Status Button */}
-          <button
-            onClick={() => {
-              onClose();
-              setIsSupabaseModalOpen(true);
-            }}
-            className="w-full flex items-center justify-between p-3 rounded-xl border border-neutral-200 dark:border-[#333333] hover:border-[#0494f4] dark:hover:border-[#0494f4] bg-white dark:bg-[#262626] text-xs font-semibold text-neutral-800 dark:text-neutral-200 transition-colors"
+          {/* Manage the Gothwad Account itself (password, profile) on Accounts */}
+          <a
+            href={accountUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="w-full flex items-center justify-between p-3 rounded-xl border border-neutral-200 dark:border-[#333333] hover:bg-neutral-50 dark:hover:bg-[#282828] text-xs font-semibold text-neutral-800 dark:text-neutral-200 transition-colors"
           >
-            <div className="flex items-center gap-2.5">
-              <Database className="w-4 h-4 text-[#0494f4]" />
-              <div className="text-left">
-                <p>Supabase PostgreSQL DB</p>
-                <p className="text-[10px] text-neutral-400 font-normal">
-                  {supabaseConfig.isConnected ? 'Connected & Synced' : 'Ready to configure credentials'}
-                </p>
-              </div>
-            </div>
-            <span
-              className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                supabaseConfig.isConnected
-                  ? 'bg-[#0494f4]/20 text-[#0494f4]'
-                  : 'bg-neutral-100 dark:bg-[#383838] text-neutral-500'
-              }`}
-            >
-              {supabaseConfig.isConnected ? 'Connected' : 'Setup'}
-            </span>
-          </button>
+            <span>Manage Gothwad Account</span>
+            <ExternalLink className="w-3.5 h-3.5 text-neutral-400" />
+          </a>
 
           {/* Theme Switcher Button */}
           <button
@@ -167,7 +112,7 @@ export const AccountSheet: React.FC<AccountSheetProps> = ({ isOpen, onClose }) =
 
         <div className="mt-4 pt-3 border-t border-neutral-100 dark:border-[#2f2f2f] text-center">
           <p className="text-[11px] text-neutral-400 font-medium">
-            Gothwad Mail v1.0 · Powered by Supabase
+            Gothwad Mail
           </p>
         </div>
       </div>

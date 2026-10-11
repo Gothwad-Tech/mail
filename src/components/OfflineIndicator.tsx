@@ -24,7 +24,7 @@ export const OfflineIndicator: React.FC = () => {
   return (
     <div className="fixed bottom-20 md:bottom-6 left-4 z-50 flex items-center gap-2.5 px-4 py-2.5 rounded-2xl bg-neutral-900 text-white border border-neutral-700 shadow-xl text-xs select-none animate-in fade-in slide-in-from-bottom-2">
       <WifiOff className="w-4 h-4 text-[#0494f4]" />
-      <span>Offline Mode — Cached local data is being used.</span>
+      <span>You're offline. Mail will load again when you reconnect.</span>
     </div>
   );
 };

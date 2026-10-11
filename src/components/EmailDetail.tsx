@@ -1,52 +1,34 @@
 import React, { useState } from 'react';
-import {
-  ArrowLeft,
-  Archive,
-  Trash2,
-  Mail,
-  Clock,
-  Star,
-  Tag,
-  FolderInput,
-  Printer,
-  MoreVertical,
-  Reply,
-  ReplyAll,
-  Forward,
-  ShieldCheck,
-  ChevronDown,
-  Paperclip,
-  Download,
-  Send,
-  X,
-} from 'lucide-react';
+import { ArrowLeft, Trash2, Mail, Star, Printer, Forward, Reply, Send, Paperclip } from 'lucide-react';
 import { useMail } from '../context/MailContext';
-import { EmailFolder } from '../types/email';
+
+// Email HTML is untrusted. We render it in an iframe with:
+//   - sandbox without allow-scripts/allow-same-origin -> no scripts, no access to this app.
+//   - a CSP that blocks scripts, objects and frames; only images/styles are allowed.
+// This keeps malicious HTML away from the Mail session and cookies.
+const EMAIL_CSP =
+  "default-src 'none'; img-src https: data: cid:; style-src 'unsafe-inline'; font-src https: data:; media-src https: data:";
+
+function buildSrcDoc(html: string): string {
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${EMAIL_CSP}"><base target="_blank"><style>html,body{margin:0;padding:16px;background:#fff;color:#111;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;line-height:1.6;word-wrap:break-word;}img{max-width:100%;height:auto;}</style></head><body>${html}</body></html>`;
+}
 
 export const EmailDetail: React.FC = () => {
   const {
     selectedEmail,
+    isLoadingSelected,
     setSelectedEmailId,
-    archiveEmails,
     deleteEmails,
     markAsRead,
-    snoozeEmails,
     toggleStar,
-    moveToFolder,
-    addLabelToEmails,
-    labels,
     sendEmail,
-    showToast,
+    openCompose,
+    currentFolder,
   } = useMail();
 
-  const [isDetailsExpanded, setIsDetailsExpanded] = useState(false);
-  const [isMoveMenuOpen, setIsMoveMenuOpen] = useState(false);
-  const [isLabelMenuOpen, setIsLabelMenuOpen] = useState(false);
-  const [isMobileMoreOpen, setIsMobileMoreOpen] = useState(false);
-  const [isReplyOpen, setIsReplyOpen] = useState(false);
-  const [replyMode, setReplyMode] = useState<'reply' | 'forward'>('reply');
   const [replyBody, setReplyBody] = useState('');
   const [isSendingReply, setIsSendingReply] = useState(false);
+  const [isReplyOpen, setIsReplyOpen] = useState(false);
 
   if (!selectedEmail) {
     return (
@@ -56,436 +38,203 @@ export const EmailDetail: React.FC = () => {
     );
   }
 
+  const isTrash = currentFolder === 'trash';
+  // Replying to a message you sent goes back to its recipients.
+  const replyTo = selectedEmail.folder === 'sent' ? selectedEmail.toRecipients : [selectedEmail.senderEmail];
+
   const handleSendReply = async () => {
-    if (!replyBody.trim()) return;
+    if (!replyBody.trim() || replyTo.length === 0) return;
     setIsSendingReply(true);
-    await sendEmail({
-      to: [selectedEmail.senderEmail],
+    const ok = await sendEmail({
+      to: replyTo,
       cc: [],
       bcc: [],
-      subject: replyMode === 'reply' ? `Re: ${selectedEmail.subject}` : `Fwd: ${selectedEmail.subject}`,
+      subject: /^re:/i.test(selectedEmail.subject) ? selectedEmail.subject : `Re: ${selectedEmail.subject}`,
       body: replyBody,
-      attachments: [],
-      category: selectedEmail.category,
     });
-    setReplyBody('');
-    setIsReplyOpen(false);
     setIsSendingReply(false);
+    if (ok) {
+      setReplyBody('');
+      setIsReplyOpen(false);
+    }
   };
 
-  const handlePrint = () => {
-    window.print();
+  const handleForward = () => {
+    openCompose({
+      subject: /^fwd:/i.test(selectedEmail.subject) ? selectedEmail.subject : `Fwd: ${selectedEmail.subject}`,
+      body: `\n\n---------- Forwarded message ----------\nFrom: ${selectedEmail.senderEmail}\nSubject: ${selectedEmail.subject}\n\n${selectedEmail.bodyText}`,
+    });
   };
+
+  const handlePrint = () => window.print();
+
+  const dateLabel = new Date(selectedEmail.timestamp).toLocaleString([], {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
 
   return (
     <div className="flex-1 flex flex-col h-full bg-white dark:bg-[#212121] overflow-hidden select-none">
-      {/* =========================================================================
-          TOP ACTION BAR (Clean Mobile 4-Action Bar vs Desktop Toolbar)
-      ========================================================================= */}
-      <div className="h-12 border-b border-neutral-200 dark:border-[#333333] px-3 sm:px-4 flex items-center justify-between shrink-0 bg-white dark:bg-[#212121]">
-        {/* Left: Back Arrow */}
+      {/* ----- Action bar ----- */}
+      <div className="h-12 border-b border-neutral-200 dark:border-[#333333] px-3 sm:px-4 flex items-center justify-between shrink-0">
+        <button
+          onClick={() => setSelectedEmailId(null)}
+          className="flex items-center justify-center w-10 h-10 rounded-full hover:bg-neutral-100 dark:hover:bg-[#2e2e2e] text-neutral-600 dark:text-neutral-300"
+          title="Back"
+          aria-label="Back to conversations list"
+        >
+          <ArrowLeft className="w-5 h-5" />
+        </button>
+
         <div className="flex items-center gap-1">
           <button
-            onClick={() => setSelectedEmailId(null)}
-            className="flex items-center justify-center w-10 h-10 rounded-full hover:bg-neutral-100 dark:hover:bg-[#2e2e2e] text-neutral-600 dark:text-neutral-300 transition-colors"
-            title="Back"
-            aria-label="Back to conversations list"
+            onClick={() => toggleStar(selectedEmail.id)}
+            className="w-9 h-9 flex items-center justify-center rounded-full hover:bg-neutral-100 dark:hover:bg-[#2e2e2e]"
+            title={selectedEmail.isStarred ? 'Unstar' : 'Star'}
+            aria-label={selectedEmail.isStarred ? 'Unstar' : 'Star'}
           >
-            <ArrowLeft className="w-5 h-5" />
+            <Star
+              className={`w-4 h-4 ${selectedEmail.isStarred ? 'fill-amber-400 text-amber-400' : 'text-neutral-400'}`}
+            />
           </button>
-        </div>
-
-        {/* Right Actions: Mobile has 4 clean icons; Desktop has full toolbar */}
-        <div className="flex items-center gap-1 sm:gap-2">
-          <button
-            onClick={() => archiveEmails([selectedEmail.id])}
-            className="w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center rounded-full hover:bg-neutral-100 dark:hover:bg-[#2e2e2e] text-neutral-600 dark:text-neutral-300 transition-colors"
-            title="Archive"
-            aria-label="Archive conversation"
-          >
-            <Archive className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
-          </button>
-
-          <button
-            onClick={() => deleteEmails([selectedEmail.id])}
-            className="w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center rounded-full hover:bg-neutral-100 dark:hover:bg-[#2e2e2e] text-neutral-600 dark:text-neutral-300 transition-colors"
-            title="Delete"
-            aria-label="Delete conversation"
-          >
-            <Trash2 className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
-          </button>
-
           <button
             onClick={() => markAsRead([selectedEmail.id], false)}
-            className="w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center rounded-full hover:bg-neutral-100 dark:hover:bg-[#2e2e2e] text-neutral-600 dark:text-neutral-300 transition-colors"
+            className="w-9 h-9 flex items-center justify-center rounded-full hover:bg-neutral-100 dark:hover:bg-[#2e2e2e] text-neutral-600 dark:text-neutral-300"
             title="Mark unread"
             aria-label="Mark unread"
           >
-            <Mail className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+            <Mail className="w-4 h-4" />
           </button>
+          <button
+            onClick={handlePrint}
+            className="hidden md:flex w-9 h-9 items-center justify-center rounded-full hover:bg-neutral-100 dark:hover:bg-[#2e2e2e] text-neutral-600 dark:text-neutral-300"
+            title="Print"
+            aria-label="Print"
+          >
+            <Printer className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => deleteEmails([selectedEmail.id])}
+            className="w-9 h-9 flex items-center justify-center rounded-full hover:bg-neutral-100 dark:hover:bg-[#2e2e2e] text-neutral-600 dark:text-neutral-300"
+            title={isTrash ? 'Delete forever' : 'Move to Trash'}
+            aria-label={isTrash ? 'Delete forever' : 'Move to Trash'}
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
 
-          {/* Desktop Only Buttons: Snooze, Move, Label, Print */}
-          <div className="hidden md:flex items-center gap-1">
-            <button
-              onClick={() => snoozeEmails([selectedEmail.id])}
-              className="w-10 h-10 flex items-center justify-center rounded-full hover:bg-neutral-100 dark:hover:bg-[#2e2e2e] text-neutral-600 dark:text-neutral-300 transition-colors"
-              title="Snooze"
-            >
-              <Clock className="w-4.5 h-4.5" />
-            </button>
-
-            {/* Move to folder */}
-            <div className="relative">
-              <button
-                onClick={() => setIsMoveMenuOpen(!isMoveMenuOpen)}
-                className="w-10 h-10 flex items-center justify-center rounded-full hover:bg-neutral-100 dark:hover:bg-[#2e2e2e] text-neutral-600 dark:text-neutral-300 transition-colors"
-                title="Move to..."
-              >
-                <FolderInput className="w-4.5 h-4.5" />
-              </button>
-              {isMoveMenuOpen && (
-                <div className="absolute left-0 top-11 w-44 bg-white dark:bg-[#262626] border border-neutral-200 dark:border-[#383838] rounded-xl shadow-lg py-1.5 z-40 text-xs">
-                  {(['inbox', 'archive', 'trash', 'spam'] as EmailFolder[]).map((f) => (
-                    <button
-                      key={f}
-                      onClick={() => {
-                        moveToFolder([selectedEmail.id], f);
-                        setIsMoveMenuOpen(false);
-                      }}
-                      className="w-full text-left px-3 py-1.5 capitalize hover:bg-neutral-100 dark:hover:bg-[#333333] text-neutral-800 dark:text-neutral-200"
-                    >
-                      Move to {f}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Labels */}
-            <div className="relative">
-              <button
-                onClick={() => setIsLabelMenuOpen(!isLabelMenuOpen)}
-                className="w-10 h-10 flex items-center justify-center rounded-full hover:bg-neutral-100 dark:hover:bg-[#2e2e2e] text-neutral-600 dark:text-neutral-300 transition-colors"
-                title="Labels"
-              >
-                <Tag className="w-4.5 h-4.5" />
-              </button>
-              {isLabelMenuOpen && (
-                <div className="absolute left-0 top-11 w-44 bg-white dark:bg-[#262626] border border-neutral-200 dark:border-[#383838] rounded-xl shadow-lg py-1.5 z-40 text-xs">
-                  {labels.map((lbl) => (
-                    <button
-                      key={lbl}
-                      onClick={() => {
-                        addLabelToEmails([selectedEmail.id], lbl);
-                        setIsLabelMenuOpen(false);
-                      }}
-                      className="w-full text-left px-3 py-1.5 hover:bg-neutral-100 dark:hover:bg-[#333333] text-neutral-800 dark:text-neutral-200"
-                    >
-                      {lbl}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <button
-              onClick={handlePrint}
-              className="w-10 h-10 flex items-center justify-center rounded-full hover:bg-neutral-100 dark:hover:bg-[#2e2e2e] text-neutral-600 dark:text-neutral-300 transition-colors"
-              title="Print email"
-            >
-              <Printer className="w-4.5 h-4.5" />
-            </button>
-
-            <button
-              onClick={() => toggleStar(selectedEmail.id)}
-              className="w-10 h-10 flex items-center justify-center rounded-full hover:bg-neutral-100 dark:hover:bg-[#2e2e2e] transition-colors"
-              title={selectedEmail.isStarred ? 'Unstar' : 'Star'}
-            >
-              <Star
-                className={`w-4.5 h-4.5 ${
-                  selectedEmail.isStarred
-                    ? 'fill-[#0494f4] text-[#0494f4]'
-                    : 'text-neutral-400'
-                }`}
-              />
-            </button>
+      {/* ----- Header ----- */}
+      <div className="px-4 sm:px-6 pt-4 pb-3 border-b border-neutral-100 dark:border-[#2e2e2e] shrink-0">
+        <h2 className="text-lg font-bold text-neutral-900 dark:text-white break-words">
+          {selectedEmail.subject || '(no subject)'}
+        </h2>
+        <div className="mt-2 flex items-start gap-3">
+          <div className="w-9 h-9 rounded-full bg-[#0494f4] text-white flex items-center justify-center font-bold text-sm shrink-0">
+            {(selectedEmail.senderName || '?').charAt(0).toUpperCase()}
           </div>
-
-          {/* Mobile Overflow Menu Button */}
-          <div className="relative md:hidden">
-            <button
-              onClick={() => setIsMobileMoreOpen(!isMobileMoreOpen)}
-              className="w-9 h-9 flex items-center justify-center rounded-full hover:bg-neutral-100 dark:hover:bg-[#2e2e2e] text-neutral-600 dark:text-neutral-300 transition-colors"
-              aria-label="More options"
-            >
-              <MoreVertical className="w-4.5 h-4.5" />
-            </button>
-
-            {isMobileMoreOpen && (
-              <div className="absolute right-0 top-10 w-48 bg-white dark:bg-[#262626] border border-neutral-200 dark:border-[#383838] rounded-xl shadow-xl py-1 z-50 text-xs">
-                <button
-                  onClick={() => {
-                    toggleStar(selectedEmail.id);
-                    setIsMobileMoreOpen(false);
-                  }}
-                  className="w-full text-left px-3 py-2 hover:bg-neutral-100 dark:hover:bg-[#333333] flex items-center gap-2.5"
-                >
-                  <Star className={`w-4 h-4 ${selectedEmail.isStarred ? 'text-[#0494f4] fill-[#0494f4]' : ''}`} />
-                  <span>{selectedEmail.isStarred ? 'Unstar' : 'Add star'}</span>
-                </button>
-                <button
-                  onClick={() => {
-                    snoozeEmails([selectedEmail.id]);
-                    setIsMobileMoreOpen(false);
-                  }}
-                  className="w-full text-left px-3 py-2 hover:bg-neutral-100 dark:hover:bg-[#333333] flex items-center gap-2.5"
-                >
-                  <Clock className="w-4 h-4" />
-                  <span>Snooze</span>
-                </button>
-                <button
-                  onClick={() => {
-                    handlePrint();
-                    setIsMobileMoreOpen(false);
-                  }}
-                  className="w-full text-left px-3 py-2 hover:bg-neutral-100 dark:hover:bg-[#333333] flex items-center gap-2.5"
-                >
-                  <Printer className="w-4 h-4" />
-                  <span>Print</span>
-                </button>
-              </div>
+          <div className="min-w-0 text-xs text-neutral-500 dark:text-neutral-400">
+            <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 truncate">
+              {selectedEmail.senderName}{' '}
+              <span className="font-normal text-neutral-500">&lt;{selectedEmail.senderEmail}&gt;</span>
+            </p>
+            <p className="truncate">To: {selectedEmail.toRecipients.join(', ') || '(none)'}</p>
+            {selectedEmail.ccRecipients.length > 0 && (
+              <p className="truncate">Cc: {selectedEmail.ccRecipients.join(', ')}</p>
             )}
+            <p>{dateLabel}</p>
           </div>
         </div>
       </div>
 
-      {/* =========================================================================
-          EMAIL CONTENT SCROLLABLE BODY
-      ========================================================================= */}
-      <div className="flex-1 overflow-y-auto no-scrollbar px-3.5 sm:px-8 py-4 sm:py-6">
-        {/* Subject Title */}
-        <div className="mb-4 pb-3 border-b border-neutral-100 dark:border-[#2e2e2e]">
-          <div className="flex items-start justify-between gap-3">
-            <h2 className="text-lg sm:text-2xl font-bold text-neutral-900 dark:text-white leading-snug">
-              {selectedEmail.subject}
-            </h2>
-            <span className="text-[10px] sm:text-xs font-bold uppercase tracking-wider px-2 py-0.5 rounded border border-neutral-200 dark:border-[#383838] text-neutral-500 shrink-0">
-              {selectedEmail.category}
-            </span>
+      {/* ----- Body ----- */}
+      <div className="flex-1 min-h-0 overflow-y-auto select-text">
+        {isLoadingSelected && !selectedEmail.bodyText && !selectedEmail.bodyHtml ? (
+          <p className="p-6 text-sm text-neutral-500">Loading message…</p>
+        ) : selectedEmail.bodyHtml ? (
+          <iframe
+            title="Message body"
+            // No allow-scripts: scripts stay off. Popups are allowed only so links open in a new tab.
+            sandbox="allow-popups allow-popups-to-escape-sandbox"
+            srcDoc={buildSrcDoc(selectedEmail.bodyHtml)}
+            className="w-full h-[60vh] min-h-[320px] bg-white border-0"
+          />
+        ) : (
+          <div className="p-4 sm:p-6 text-sm leading-relaxed text-neutral-800 dark:text-neutral-200 whitespace-pre-wrap break-words select-text">
+            {selectedEmail.bodyText || '(empty message)'}
           </div>
+        )}
 
-          {/* Labels */}
-          {selectedEmail.labels && selectedEmail.labels.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1.5 mt-2">
-              {selectedEmail.labels.map((lbl) => (
-                <span
-                  key={lbl}
-                  className="text-[10px] font-semibold px-2.5 py-0.5 rounded-full bg-[#0494f4]/15 text-[#0494f4]"
-                >
-                  {lbl}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Sender Details Header */}
-        <div className="flex items-start justify-between gap-3 mb-5">
-          <div className="flex items-start gap-3">
-            <div className="w-10 h-10 rounded-full bg-[#0494f4] text-white flex items-center justify-center font-bold text-sm shrink-0 shadow-xs">
-              {selectedEmail.senderName.substring(0, 2).toUpperCase()}
-            </div>
-
-            <div className="min-w-0">
-              <div className="flex items-baseline gap-1.5 flex-wrap">
-                <span className="font-bold text-sm sm:text-base text-neutral-900 dark:text-white truncate">
-                  {selectedEmail.senderName}
-                </span>
-                <span className="text-[11px] sm:text-xs text-neutral-500 dark:text-neutral-400 truncate">
-                  &lt;{selectedEmail.senderEmail}&gt;
-                </span>
-              </div>
-
-              {/* "to me ▾" dropdown */}
-              <button
-                type="button"
-                onClick={() => setIsDetailsExpanded(!isDetailsExpanded)}
-                className="flex items-center gap-1 text-[11px] text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200 mt-0.5"
-              >
-                <span>to {selectedEmail.toRecipients.join(', ')}</span>
-                <ChevronDown className="w-3 h-3" />
-              </button>
-
-              {/* Expanded details */}
-              {isDetailsExpanded && (
-                <div className="mt-2 p-3 rounded-xl border border-neutral-200 dark:border-[#383838] bg-neutral-50 dark:bg-[#282828] text-xs space-y-1.5 shadow-xs max-w-sm">
-                  <p>
-                    <strong className="text-neutral-400 font-medium">From: </strong>
-                    {selectedEmail.senderEmail}
-                  </p>
-                  <p>
-                    <strong className="text-neutral-400 font-medium">To: </strong>
-                    {selectedEmail.toRecipients.join(', ')}
-                  </p>
-                  <p>
-                    <strong className="text-neutral-400 font-medium">Date: </strong>
-                    {selectedEmail.dateFormatted}
-                  </p>
-                  <p className="flex items-center gap-1 text-[#0494f4] pt-1">
-                    <ShieldCheck className="w-3.5 h-3.5" />
-                    Standard TLS Encryption (Verified)
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="flex items-center gap-1 shrink-0">
-            <span className="text-xs text-neutral-400 tabular-nums">
-              {selectedEmail.dateFormatted}
-            </span>
-            <button
-              onClick={() => {
-                setReplyMode('reply');
-                setIsReplyOpen(true);
-              }}
-              className="p-1.5 rounded-full hover:bg-neutral-100 dark:hover:bg-[#2e2e2e] text-neutral-500"
-              title="Reply"
-            >
-              <Reply className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-
-        {/* Email HTML Body */}
-        <div
-          className="text-sm sm:text-base leading-relaxed text-neutral-800 dark:text-neutral-200 py-2 select-text"
-          dangerouslySetInnerHTML={{ __html: selectedEmail.bodyHtml }}
-        />
-
-        {/* Attachments */}
-        {selectedEmail.attachments && selectedEmail.attachments.length > 0 && (
-          <div className="mt-6 pt-4 border-t border-neutral-100 dark:border-[#2e2e2e]">
-            <h4 className="text-xs font-bold uppercase tracking-wider text-neutral-400 mb-3 flex items-center gap-1.5">
-              <Paperclip className="w-3.5 h-3.5 text-[#0494f4]" />
-              {selectedEmail.attachments.length} Attachment
-              {selectedEmail.attachments.length > 1 ? 's' : ''}
-            </h4>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
-              {selectedEmail.attachments.map((att) => (
+        {selectedEmail.attachments.length > 0 && (
+          <div className="px-4 sm:px-6 pb-4">
+            <p className="text-xs font-semibold text-neutral-500 mb-2">
+              {selectedEmail.attachments.length} attachment{selectedEmail.attachments.length > 1 ? 's' : ''}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {selectedEmail.attachments.map((att, i) => (
                 <div
-                  key={att.id}
-                  className="flex items-center justify-between p-3 rounded-xl border border-neutral-200 dark:border-[#383838] bg-neutral-50 dark:bg-[#282828]"
+                  key={`${att.name}-${i}`}
+                  className="flex items-center gap-2 px-3 py-2 rounded-xl border border-neutral-200 dark:border-[#383838] bg-neutral-50 dark:bg-[#282828] text-xs"
                 >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <div className="w-7 h-7 rounded-lg bg-[#0494f4]/15 flex items-center justify-center text-[#0494f4] shrink-0">
-                      <Paperclip className="w-3.5 h-3.5" />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-xs font-semibold text-neutral-800 dark:text-neutral-200 truncate">
-                        {att.name}
-                      </p>
-                      <p className="text-[10px] text-neutral-400 font-mono">{att.size}</p>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={() => showToast(`Downloaded "${att.name}"`)}
-                    className="p-1.5 rounded hover:bg-neutral-200 dark:hover:bg-[#383838] text-[#0494f4]"
-                    title="Download"
-                  >
-                    <Download className="w-4 h-4" />
-                  </button>
+                  <Paperclip className="w-3.5 h-3.5 text-[#0494f4]" />
+                  <span className="font-medium text-neutral-800 dark:text-neutral-200 truncate max-w-[200px]">
+                    {att.name}
+                  </span>
+                  <span className="text-[10px] text-neutral-400 font-mono">{att.size}</span>
                 </div>
               ))}
             </div>
+            <p className="mt-2 text-[11px] text-neutral-400">
+              Attachment files are not stored yet. Only their names and sizes are shown.
+            </p>
           </div>
         )}
+      </div>
 
-        {/* =========================================================================
-            BOTTOM ACTION BUTTONS (Reply, Reply all, Forward)
-        ========================================================================= */}
-        {!isReplyOpen && (
-          <div className="mt-8 pt-4 border-t border-neutral-100 dark:border-[#2e2e2e] flex flex-wrap items-center gap-2.5">
+      {/* ----- Reply / forward ----- */}
+      <div className="border-t border-neutral-200 dark:border-[#333333] px-4 sm:px-6 py-3 shrink-0">
+        {!isReplyOpen ? (
+          <div className="flex items-center gap-2">
             <button
-              onClick={() => {
-                setReplyMode('reply');
-                setIsReplyOpen(true);
-              }}
-              className="flex-1 sm:flex-initial flex items-center justify-center gap-2 px-5 py-2.5 rounded-full border border-neutral-300 dark:border-[#383838] hover:border-[#0494f4] dark:hover:border-[#0494f4] text-xs font-bold text-neutral-700 dark:text-neutral-200 min-h-[44px] transition-colors"
+              onClick={() => setIsReplyOpen(true)}
+              disabled={replyTo.length === 0}
+              className="flex items-center gap-2 px-4 py-2 rounded-full border border-neutral-200 dark:border-[#383838] text-xs font-semibold text-neutral-700 dark:text-neutral-200 hover:bg-neutral-50 dark:hover:bg-[#282828] disabled:opacity-50"
             >
-              <Reply className="w-3.5 h-3.5 text-[#0494f4]" />
-              Reply
+              <Reply className="w-3.5 h-3.5" /> Reply
             </button>
-
             <button
-              onClick={() => {
-                setReplyMode('reply');
-                setIsReplyOpen(true);
-              }}
-              className="flex-1 sm:flex-initial flex items-center justify-center gap-2 px-5 py-2.5 rounded-full border border-neutral-300 dark:border-[#383838] hover:border-[#0494f4] dark:hover:border-[#0494f4] text-xs font-bold text-neutral-700 dark:text-neutral-200 min-h-[44px] transition-colors"
+              onClick={handleForward}
+              className="flex items-center gap-2 px-4 py-2 rounded-full border border-neutral-200 dark:border-[#383838] text-xs font-semibold text-neutral-700 dark:text-neutral-200 hover:bg-neutral-50 dark:hover:bg-[#282828]"
             >
-              <ReplyAll className="w-3.5 h-3.5 text-[#0494f4]" />
-              Reply all
-            </button>
-
-            <button
-              onClick={() => {
-                setReplyMode('forward');
-                setIsReplyOpen(true);
-              }}
-              className="w-full sm:w-auto flex items-center justify-center gap-2 px-5 py-2.5 rounded-full border border-neutral-300 dark:border-[#383838] hover:border-[#0494f4] dark:hover:border-[#0494f4] text-xs font-bold text-neutral-700 dark:text-neutral-200 min-h-[44px] transition-colors"
-            >
-              <Forward className="w-3.5 h-3.5 text-[#0494f4]" />
-              Forward
+              <Forward className="w-3.5 h-3.5" /> Forward
             </button>
           </div>
-        )}
-
-        {/* Inline Reply Editor */}
-        {isReplyOpen && (
-          <div className="mt-6 border border-neutral-200 dark:border-[#383838] rounded-2xl p-4 bg-neutral-50/50 dark:bg-[#262626]">
-            <div className="flex items-center justify-between pb-2 mb-2 text-xs border-b border-neutral-200 dark:border-[#333333]">
-              <span className="font-semibold text-neutral-700 dark:text-neutral-300 flex items-center gap-1.5">
-                <Reply className="w-3.5 h-3.5 text-[#0494f4]" />
-                {replyMode === 'reply' ? 'Reply to' : 'Forward to'} {selectedEmail.senderEmail}
-              </span>
-              <button
-                onClick={() => setIsReplyOpen(false)}
-                className="p-1 rounded text-neutral-400 hover:text-neutral-700"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
+        ) : (
+          <div className="space-y-2">
+            <p className="text-xs text-neutral-500">
+              Reply to <span className="font-semibold">{replyTo.join(', ')}</span>
+            </p>
             <textarea
               value={replyBody}
               onChange={(e) => setReplyBody(e.target.value)}
-              placeholder="Write your response..."
               rows={4}
               autoFocus
-              className="w-full bg-white dark:bg-[#1f1f1f] border border-neutral-200 dark:border-[#383838] rounded-xl p-3 text-sm text-neutral-900 dark:text-white focus:outline-none focus:border-[#0494f4]"
+              placeholder="Write your reply..."
+              className="w-full p-3 rounded-xl border border-neutral-200 dark:border-[#383838] bg-white dark:bg-[#1e1e1e] text-sm text-neutral-900 dark:text-neutral-100 focus:outline-none focus:border-[#0494f4]"
             />
-
-            <div className="flex items-center justify-between mt-3">
+            <div className="flex items-center justify-end gap-2">
+              <button
+                onClick={() => setIsReplyOpen(false)}
+                className="px-4 py-2 text-xs font-medium rounded-xl hover:bg-neutral-100 dark:hover:bg-[#2e2e2e]"
+              >
+                Cancel
+              </button>
               <button
                 onClick={handleSendReply}
                 disabled={isSendingReply || !replyBody.trim()}
-                className="flex items-center gap-2 px-5 py-2.5 bg-[#0494f4] hover:bg-[#0382d6] text-white text-xs font-bold rounded-xl transition-colors disabled:opacity-50 min-h-[44px]"
+                className="flex items-center gap-2 px-5 py-2 rounded-xl bg-[#0494f4] hover:bg-[#0382d6] text-white text-xs font-bold disabled:opacity-50"
               >
-                <Send className="w-3.5 h-3.5" />
-                <span>Send</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  setReplyBody('');
-                  setIsReplyOpen(false);
-                }}
-                className="p-2 rounded text-neutral-400 hover:text-neutral-600"
-              >
-                <Trash2 className="w-4 h-4" />
+                <Send className="w-3.5 h-3.5" /> {isSendingReply ? 'Sending…' : 'Send'}
               </button>
             </div>
           </div>
