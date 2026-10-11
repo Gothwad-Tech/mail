@@ -5,14 +5,14 @@
 | Area | Status | Notes |
 | --- | --- | --- |
 | Worker REST API (`/api/*`) | Done, tested | Session, folders, read/star/trash, drafts, send |
-| Accounts SSO (cookie) | Done, tested against a stub | `/api/auth/me`; rotated cookies forwarded |
+| Accounts SSO (cookie) | Implemented; live handoff needs verification | `/api/auth/me`; rotated cookies forwarded; repeated chooser return was reported, so confirm production shared-cookie settings |
 | Accounts SSO (bearer) | Done, tested | `/api/oauth/userinfo`. Not used by the web app yet |
 | Send via Resend | Done, not live-tested | Needs Resend key and verified domain |
 | Daily send cap | Done | Default 30 (`DAILY_SEND_LIMIT`) |
 | Inbound Email handler | Done in code, tested | Depends on Accounts username endpoint and shared secret; keep Email Routing off until verified |
 | Supabase schema | Done (`supabase/mail.sql`) | Run only in the separate Mail Supabase project |
 | Frontend (API-backed) | Done | Visual check still needed |
-| Auth gate | Done | Signed-out goes to `/signin?choose=1&next=` |
+| Auth gate | Implemented with return-loop guard | Signed-out goes to `/signin?choose=1&next=`; a returned-but-unverified session shows a diagnostic instead of looping |
 | Docs | Done | README, AGENTS, TASK, PLAN, docs/ |
 
 ## Decisions made with the owner
@@ -36,6 +36,9 @@
 
 ## Known gaps (not blocking)
 
+- **Live Accounts SSO still needs verification.** A user reported that account selection returns
+  to the chooser. Mail now detects that failed handoff and stops the loop; check the deployed
+  Accounts cookie Domain and `GET /api/session` status as described in `docs/MAIL.md`.
 - No Undo for moving to Trash. No "restore from Trash" yet.
 - Search filters only the list already loaded in the browser.
 - Sidebar folder counts are not shown (there is no cheap server count).

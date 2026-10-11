@@ -144,6 +144,21 @@ curl -i https://mail.gothwadtech.com/api/session   # should return 401 with sign
 
 If `/api/health` returns HTML, the route is not matching. Fix the route order before you go on.
 
+### Check cookie SSO in a real browser
+
+1. Open Accounts and Mail over **HTTPS in the same browser profile**.
+2. Sign in to Accounts, then open Mail. The Mail `/api/session` request should return **200**.
+   With no Accounts session, it should return **401** with a `signinUrl`.
+3. If Mail returns to Accounts after a chooser selection, check the `/api/session` status in
+   the browser Network panel. A repeated **401** means Mail did not verify the Accounts session.
+4. In browser storage, inspect cookie **names and attributes only**. `gothwad_at` and
+   `gothwad_rt` should use `Domain=.APP_DOMAIN` (for example `.gothwadtech.com`), Path `/`,
+   and Secure. Never copy cookie values into chat, logs, or tickets.
+
+Accounts must set these cookies on the parent Gothwad domain for subdomain SSO. If the
+cookies are missing or host-only, correct the Accounts deployment/configuration; changing
+Mail's `next` URL will not fix that. See [docs/MAIL.md](MAIL.md#if-accounts-keeps-showing-the-chooser) for troubleshooting details.
+
 ---
 
 ## 5. Confirm Accounts, then enable Email Routing (inbound)
@@ -222,6 +237,7 @@ Tests:
 ```bash
 npm run lint          # root and worker typecheck
 npm run build
+npm run test:auth     # sign-in redirect/return tests, no network
 npm run test:worker   # Worker tests, no network
 npm run test:ui       # jsdom smoke test; needs the Worker running and a signed-in cookie
 ```

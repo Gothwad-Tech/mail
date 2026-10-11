@@ -2,6 +2,45 @@
 
 Updated every session. Newest first.
 
+## 2026-10-11 — Diagnose the Accounts chooser return loop
+
+**Goal:** Investigate the report that selecting an already-signed-in Gothwad account returns
+to the Accounts chooser instead of opening Mail.
+
+**Finding**
+- The reported `next=https://mail.gothwadtech.com/` destination is correctly encoded. The
+  Accounts chooser's return path accepts Gothwad subdomains in the read-only Accounts `main`
+  source. The loop therefore most likely happens after the redirect: Mail's
+  `GET /api/session` still sees the Accounts session as missing/invalid (401).
+- The current Accounts source is designed to set `gothwad_at` and `gothwad_rt` on
+  `Domain=.APP_DOMAIN`, shared across Gothwad subdomains. The live cookie attributes and
+  deployed Accounts Worker could not be verified from this checkout, so the production cause
+  still needs a browser check.
+
+**Done**
+- Mail adds a one-time return marker to `next`. If the browser comes back but `/api/session`
+  is still 401, Mail now shows an actionable error rather than bouncing to the chooser forever.
+- Added URL helper tests and a UI smoke test for both the initial redirect and failed return.
+- Updated `docs/MAIL.md`, `docs/SETUP.md`, `PLAN.md`, `README.md`, and `AGENTS.md` with the
+  diagnosis, cookie checks, and new test command.
+
+**Human verification still needed**
+- In the same browser profile, check the Mail `/api/session` status after choosing an account.
+  A 401 means the session cookie was not verified; check only the `gothwad_at`/`gothwad_rt`
+  cookie names and Domain/Path/Secure attributes, never share their values.
+- Confirm the deployed Accounts Worker sets the cookies on `.APP_DOMAIN` and is current.
+  Mail's redirect URL itself does not need changing.
+
+**Verified**
+- `npm run lint` — pass.
+- `npm run build` — pass (existing Vite `configLoader: 'native'` compatibility warning).
+- `npm run test:auth` — 2 tests pass.
+- `npm run test:worker` — 38 tests pass.
+- `npm run test:ui` — 3 tests pass against temporary local Accounts/Supabase stubs; stubs and
+  `worker/.dev.vars` were removed. Wrangler emitted its usual optional `Request.cf` warning.
+
+---
+
 ## 2026-10-11 — Separate Mail storage and Accounts API inbound check
 
 **Goal:** Replace the old shared-Supabase `profiles` lookup with a fail-closed Accounts

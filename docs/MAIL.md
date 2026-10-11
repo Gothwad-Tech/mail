@@ -30,7 +30,8 @@ Internet mail ──► Email Routing (catch-all) ──► Mail Worker email()
    **derived**: `username@APP_DOMAIN`. Accounts does not store the email.
 3. If the user is not signed in, the Worker returns **401** with
    `signinUrl = {AUTH_HUB_URL}/signin?choose=1`. The web app sends the browser there with
-   `&next=` set to the Mail page, so the user comes back after signing in.
+   `&next=` set to the Mail page. A one-time `__mail_auth_return=1` marker is included in
+   that return URL so Mail can tell a failed SSO handoff from the initial sign-in.
 4. Accounts can rotate the refresh token on `/auth/me`. It then sends new `gothwad_*`
    cookies. The Worker passes those cookies on to the browser. If it did not, the user would
    be signed out of Accounts everywhere.
@@ -41,6 +42,31 @@ Internet mail ──► Email Routing (catch-all) ──► Mail Worker email()
    signed-out state.
 
 Upstream redirects are never followed. A redirect from Accounts counts as "not signed in".
+
+### If Accounts keeps showing the chooser
+
+If the browser returns to Mail and immediately lands on Accounts' chooser again, the `next`
+URL has already worked: Mail received the marked return URL, but `GET /api/session` still
+could not verify the Accounts session. Mail now stops after that return and shows a message
+instead of sending the browser through an endless chooser loop.
+
+The most likely cause is that Mail did not receive a valid shared Accounts session cookie.
+Check these items in the **same browser profile** (do not copy or share cookie values):
+
+- In the browser's Network panel, check the status of `https://mail.gothwadtech.com/api/session`.
+  A **401** after returning from Accounts means the session was not verified; a **503** means
+  Mail could not reach Accounts.
+- In browser storage, check only that the `gothwad_at` and `gothwad_rt` cookies exist and
+  their **Domain** is `.APP_DOMAIN` (for example, `.gothwadtech.com`), Path is `/`, and
+  Secure is enabled. Never paste the cookie values into chat or a ticket.
+- Confirm the Accounts Worker deployed to `AUTH_HUB_URL` sets the session cookies for the
+  parent domain, and that Mail's `AUTH_HUB_URL` points to that same Accounts deployment.
+  Current Accounts code is intended to share these cookies across Gothwad subdomains.
+
+If the cookies are missing, host-only, expired, or belong to a different browser profile,
+Mail cannot repair that from its own origin. The Accounts deployment/session-cookie setup
+needs attention. Signing in again in the same browser may refresh them; if the chooser still
+loops, have the admin verify the Accounts deployment and cookie Domain configuration.
 
 ## The mailbox model
 
