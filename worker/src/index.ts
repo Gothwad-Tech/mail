@@ -16,7 +16,7 @@
 //   POST   /api/mail/send                  { to, cc?, bcc?, subject, body, draftId? }
 // =============================================================================
 
-import { readConfig, isSupabaseConfigured, type Config, type Env } from './config';
+import { readConfig, isSupabaseConfigured, configStatus, type Config, type Env } from './config';
 import { Db } from './db';
 import { corsHeaders, errorResponse, HttpError, json, assertSafeWrite, readJson } from './http';
 import * as mail from './mail';
@@ -154,7 +154,14 @@ async function route(request: Request, env: Env, config: Config): Promise<Respon
   }
 
   if (path === '/api/health' && method === 'GET') {
-    return json({ ok: true, service: 'gothwad-mail-api', environment: config.isProduction ? 'production' : 'development' });
+    // Booleans only: lets a human confirm after a deploy that nothing was wiped,
+    // without ever printing a key. See configStatus().
+    return json({
+      ok: true,
+      service: 'gothwad-mail-api',
+      environment: config.isProduction ? 'production' : 'development',
+      configured: configStatus(env, config),
+    });
   }
 
   if (path === '/api/session' && method === 'GET') {

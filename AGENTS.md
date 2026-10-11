@@ -34,8 +34,10 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
    `AUTH_SIGNIN_URL`, `MAIL_URL`, `SUPABASE_URL`. Fallback defaults may contain
    `gothwadtech.com`.
 3. **Never commit real keys.** `.env.example` and `wrangler` examples hold placeholders
-   only. Secrets go in with `wrangler secret put` or the dashboard. Never ask the user to
-   paste a live key or password into chat.
+   only. Secrets go in with `wrangler secret put` (or `npm run worker:secrets`) or the
+   dashboard as type **Secret**. Never ask the user to paste a live key or password into
+   chat. The one public value that lives in `wrangler.toml` is `SUPABASE_URL` — a project
+   URL is not a secret (it ships in every Supabase client).
 4. **Browser never calls Supabase or Resend.** Mail is sent only by the Worker.
    The Supabase `sb_secret_` key goes in the `apikey` header only, never `Authorization`
    (except legacy `eyJ` service-role keys, which need both).
@@ -63,6 +65,7 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
   - `npm run build`
   - `npm run test:worker` (Worker tests, no network)
   - `npm run test:auth` (sign-in return URL tests, no network)
+  - `npm run test:config` (after touching `worker/wrangler.toml`; config guard)
   - `npm run test:ui` (jsdom smoke test; needs `npm run worker:dev` plus a signed-in
     cookie. See `docs/SETUP.md`, "Local checks")
 - `wrangler deploy --dry-run` should bundle cleanly before any deploy.
@@ -85,6 +88,13 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
   expired session and bounced users through the chooser. Mail returns 401 only for an Accounts
   401/403; everything else is a 503 with its own code (`accounts_user_invalid`,
   `accounts_unexpected_response`, `auth_unavailable`). See the table in `docs/MAIL.md`.
+- Do **not** remove `keep_vars = true` from `worker/wrangler.toml`, and do **not** leave
+  `SUPABASE_URL` as a `YOUR_PROJECT_REF` placeholder. Plain-text dashboard variables are
+  replaced or deleted by every deploy; secrets are not. The file is the source of truth for
+  the vars it names. `npm run test:config` (`tests/worker-config.test.ts`) fails on a blank
+  var, a placeholder URL, a missing `keep_vars`, or a secret-shaped value in the file.
+- Do **not** put secret values in `wrangler.toml` or make `/api/health` return anything more
+  than booleans about which settings exist. It is a public endpoint; values never go there.
 - Do **not** point `AUTH_HUB_URL` at the Accounts Pages host
   (`accounts.gothwadtech.com`). Cloudflare does not invoke a same-zone Worker attached by a
   Route for a server-to-server call, so Mail got `200 text/html` from the SPA and reported 503

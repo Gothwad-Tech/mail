@@ -106,3 +106,18 @@ export function isSupabaseConfigured(config: Config): boolean {
   if (/^https:\/\/[a-z0-9-]+\.supabase\.co$/.test(config.supabaseUrl)) return true;
   return !config.isProduction && /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(config.supabaseUrl);
 }
+
+/**
+ * Which settings this Worker instance can actually see. Booleans only - never a
+ * value, never a prefix, never a length. `/api/health` returns this so a var or
+ * secret that a deploy removed is obvious right away, instead of surfacing later
+ * as a confusing 503. Deploys can wipe plain-text dashboard vars; secrets survive.
+ */
+export function configStatus(env: Env, config: Config): Record<string, boolean> {
+  return {
+    supabaseUrl: isSupabaseConfigured(config),
+    supabaseServiceKey: Boolean(env.SUPABASE_SERVICE_ROLE_KEY?.trim()),
+    accountsInternalToken: Boolean(config.accountsInternalToken),
+    resendApiKey: Boolean(env.RESEND_API_KEY?.trim()),
+  };
+}
