@@ -2,6 +2,57 @@
 
 Updated every session. Newest first.
 
+## 2026-10-11 — Worker name fix: repo config now says `mail` (matches the dashboard)
+
+**Report from the owner:** the repo said the Worker was `gothwad-mail-api`, but the Cloudflare
+Worker is `mail`. Local CLI commands (`npm run worker:secrets:list`, `npm run worker:deploy`)
+pointed at the wrong Worker, so the secrets looked "missing" even though they were set.
+
+**Root cause:** `worker/wrangler.toml` had `name = "gothwad-mail-api"`. Deploys from the
+dashboard/Git path (**Workers Builds**) go to the dashboard's Worker and override the config
+name with `WRANGLER_CI_OVERRIDE_NAME` (Wrangler v3+), so Git deploys hit `mail` and the mismatch
+stayed hidden. Local Wrangler commands read `name` from the file, so they hit a Worker called
+`gothwad-mail-api` that does not exist — or, worse, would have created one.
+
+**Done**
+- `worker/wrangler.toml`: `name = "mail"`. Nothing else changed — `keep_vars = true`, all nine
+  `[vars]` (including the real `SUPABASE_URL`) and the header are as they were; one comment was
+  added above `name` explaining why it must match the dashboard and must not be renamed.
+- `docs/SETUP.md`: every Worker-name reference updated to `mail` — dashboard secrets path
+  (Workers & Pages → `mail` → Settings → Variables and Secrets → Production), dashboard
+  variables path, route step (Domains & Routes), Email Routing catch-all picker, and the
+  checklist line. Added a short "Worker name: `mail` (do not rename it)" section explaining the
+  Workers Builds override and the local-CLI mismatch.
+- `README.md`: Deploy section now states the Worker is `mail` and the config must stay equal.
+- `AGENTS.md`: new "known things not to retry" entry — do not rename the Worker in
+  `wrangler.toml`; fix the file, never the dashboard (the `mail` Worker holds the secrets, the
+  route and the catch-all).
+- `/api/health`'s `service` field is a cosmetic label, **not** the Worker name, so it was left
+  as `"gothwad-mail-api"` and the README/SETUP JSON examples were left unchanged (one line was
+  added in SETUP saying the field is only a label, so nobody greps it as a Worker name again).
+- `tests/worker-config.test.ts` is unchanged: the guard never pinned the Worker name.
+
+**Verified in this sandbox**
+- `npm run lint` — pass. `npm run test:config` — 8 pass. `npm run test:worker` — 56 pass.
+  `npm run test:auth` — 5 pass.
+- `npx wrangler deploy --dry-run --config worker/wrangler.toml` — bundles clean
+  (143.08 KiB / 35.75 KiB gzip) and lists all nine vars, including the real `SUPABASE_URL`.
+- Parsed the file back: `name = mail`, `keep_vars = true`, nine vars present.
+
+**Human steps still needed (owner)**
+1. `npm run worker:secrets:list` — after this fix it targets `mail`. It must list
+   `ACCOUNTS_INTERNAL_TOKEN`, `SUPABASE_SERVICE_ROLE_KEY`, `RESEND_API_KEY`. Jo missing ho to
+   Workers & Pages → `mail` → Settings → Variables and Secrets → **Production** → type
+   **Secret** se add karo. Values chat me ya file me kabhi nahi.
+2. Redeploy (`npm run worker:deploy`), then
+   `curl -s https://mail.gothwadtech.com/api/health` — `configured` me chaaron `true` hone
+   chahiye.
+3. Dashboard me check karo ki koi leftover unused Worker `gothwad-mail-api` hai kya (purane
+   deploy se). Agar hai to owner khud review karke delete kare — code se Cloudflare me kuch
+   delete nahi karna.
+
+---
+
 ## 2026-10-11 — Worker config stops losing values: keep_vars, real SUPABASE_URL, guard test
 
 **Report from the owner:** Supabase-related values and secrets seem to be gone at the next

@@ -93,6 +93,21 @@ npm install
 npx wrangler login            # opens a browser; do this yourself
 ```
 
+### Worker name: `mail` (do not rename it)
+
+The deployed Worker is named **`mail`** in the Cloudflare dashboard, and `worker/wrangler.toml`
+now says `name = "mail"`. Keep the two the same:
+
+- Deploys from the dashboard/Git path (**Workers Builds**) go to the dashboard's Worker and
+  override the config `name` with `WRANGLER_CI_OVERRIDE_NAME`. That is why a wrong `name` in the
+  file still deployed fine — the mistake stayed hidden.
+- Local CLI commands (`npm run worker:secrets:list`, `npm run worker:deploy`) read `name` from
+  the file. If it does not match the dashboard, they hit the wrong Worker (or create a new one)
+  and the secrets look "missing".
+
+If the two ever differ again, fix the **file**, not Cloudflare: `mail` is the Worker that holds
+the secrets, the route `mail.gothwadtech.com/api/*`, and the Email Routing catch-all.
+
 ### Where each value lives (read this before touching the dashboard)
 
 `worker/wrangler.toml` is the **source of truth**. `SUPABASE_URL` and every other public var
@@ -114,7 +129,7 @@ the file (public) or in Secrets (private).
 Either way works; names must match exactly (case-sensitive). Use the exact Mail project's
 service-role key, not the Accounts project's.
 
-Dashboard: **Workers & Pages → `gothwad-mail-api` → Settings → Variables and Secrets →
+Dashboard: **Workers & Pages → `mail` → Settings → Variables and Secrets →
 Production → Add**, one row each, type **Secret** (click *Encrypt*):
 
 | Name | Value |
@@ -162,7 +177,7 @@ deleted by the next deploy; `keep_vars = true` only protects the ones not named 
 Set `AUTH_HUB_URL` and `AUTH_SIGNIN_URL` in `wrangler.toml` (they are already there) and treat
 the dashboard as a copy, not the source:
 
-1. Cloudflare dashboard → **Workers & Pages → `gothwad-mail-api` → Settings → Variables and
+1. Cloudflare dashboard → **Workers & Pages → `mail` → Settings → Variables and
    Secrets**.
 2. Select the **Production** environment and set both as plain **Text** (they are not
    secrets):
@@ -196,13 +211,15 @@ curl -s https://mail.gothwadtech.com/api/health
 #                "accountsInternalToken":true,"resendApiKey":true}}
 ```
 
+`service` is a cosmetic label in the JSON, **not** the Worker name. The Worker is `mail`.
+
 Any `false` names the missing piece: `supabaseUrl` → fix `SUPABASE_URL` in `wrangler.toml`;
 `supabaseServiceKey` / `accountsInternalToken` / `resendApiKey` → that secret is not set on the
 deployed Worker (dashboard → Settings → Variables and Secrets → Production, type **Secret**).
 Re-check this after every deploy.
 
 Routes: add the production route for the API so that `mail.gothwadtech.com/api/*` goes to
-this Worker. You can add it in the dashboard (**Workers & Pages → gothwad-mail-api →
+this Worker. You can add it in the dashboard (**Workers & Pages → mail →
 Settings → Domains & Routes**), or add a `[[routes]]` block to `wrangler.toml`. The zone
 `gothwadtech.com` must be on Cloudflare.
 
@@ -282,7 +299,7 @@ Only after it returns HTTP 200 with `{"exists": true}` for the known account:
 1. Dashboard → your zone → **Email → Email Routing**. Enable it. It adds the MX and TXT
    records. If the domain already receives mail elsewhere, read the warning first.
 2. **Routing rules → Catch-all**: set the action to **Send to a Worker**, pick
-   `gothwad-mail-api`.
+   `mail` (the Worker name from `worker/wrangler.toml`).
 3. Send a test email to `YOUR_USERNAME@gothwadtech.com` from outside. It should appear in
    the Inbox.
 
@@ -372,6 +389,6 @@ itself and says so; the other tests still run.
 - [ ] Route `mail.gothwadtech.com/api/*` points at the Worker
 - [ ] Web app hosted on `mail.gothwadtech.com`
 - [ ] Accounts endpoint is documented and the human curl check returns the expected 200
-- [ ] Only after the endpoint check: Email Routing enabled and catch-all sends to `gothwad-mail-api`
+- [ ] Only after the endpoint check: Email Routing enabled and catch-all sends to `mail`
 - [ ] Resend domain verified; send key set as a secret
 - [ ] Test: sign in, send to yourself, reply, star, trash

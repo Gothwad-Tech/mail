@@ -22,7 +22,11 @@
 # See docs/SETUP.md for the dashboard steps.
 # =============================================================================
 
-name = "gothwad-mail-api"
+# Must match the dashboard Worker name exactly (`mail`). Workers Builds deploys to
+# the dashboard's Worker and overrides this name with WRANGLER_CI_OVERRIDE_NAME, but
+# `npm run worker:secrets:list` / `worker:deploy` use THIS name - so a mismatch sends
+# local CLI commands to the wrong (or a different) Worker. Do not rename it.
+name = "mail"
 main = "src/index.ts"
 compatibility_date = "2025-09-01"
 

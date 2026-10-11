@@ -93,6 +93,12 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
   replaced or deleted by every deploy; secrets are not. The file is the source of truth for
   the vars it names. `npm run test:config` (`tests/worker-config.test.ts`) fails on a blank
   var, a placeholder URL, a missing `keep_vars`, or a secret-shaped value in the file.
+- Do **not** rename the Worker in `worker/wrangler.toml`. The deployed Worker is `mail` in the
+  dashboard, so the file must say `name = "mail"`. Workers Builds overrides the config name with
+  `WRANGLER_CI_OVERRIDE_NAME`, so a mismatch still deploys fine from Git but makes
+  `npm run worker:secrets:list` and `npm run worker:deploy` target a different (non-existent)
+  Worker. Fix the file, never the dashboard: `mail` holds the secrets, the
+  `mail.gothwadtech.com/api/*` route and the Email Routing catch-all.
 - Do **not** put secret values in `wrangler.toml` or make `/api/health` return anything more
   than booleans about which settings exist. It is a public endpoint; values never go there.
 - Do **not** point `AUTH_HUB_URL` at the Accounts Pages host
