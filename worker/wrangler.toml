@@ -2,6 +2,8 @@
 # Gothwad Mail Worker config. NO SECRETS IN THIS FILE.
 #
 # Secrets (set in the dashboard or with `wrangler secret put`):
+#   ACCOUNTS_INTERNAL_TOKEN     (same value as MAIL_INTERNAL_TOKEN in Accounts;
+#                               set with `wrangler secret put ACCOUNTS_INTERNAL_TOKEN`)
 #   SUPABASE_SERVICE_ROLE_KEY   (sb_secret_... or legacy eyJ... service_role)
 #   RESEND_API_KEY              (re_...)
 #

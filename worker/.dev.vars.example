@@ -1,6 +1,7 @@
 # Copy to worker/.dev.vars for LOCAL `npm run worker:dev` only. Never commit .dev.vars.
 # Placeholders only. Put real secrets in .dev.vars on your own machine, never in chat.
 ENVIRONMENT=development
+ACCOUNTS_INTERNAL_TOKEN=REPLACE_ME
 SUPABASE_SERVICE_ROLE_KEY=sb_secret_REPLACE_ME
 RESEND_API_KEY=re_REPLACE_ME
 # Local-only sign-in bypass (ignored when ENVIRONMENT=production):

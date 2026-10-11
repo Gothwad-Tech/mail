@@ -9,22 +9,28 @@
 | Accounts SSO (bearer) | Done, tested | `/api/oauth/userinfo`. Not used by the web app yet |
 | Send via Resend | Done, not live-tested | Needs Resend key and verified domain |
 | Daily send cap | Done | Default 30 (`DAILY_SEND_LIMIT`) |
-| Inbound Email handler | Done, tested in workerd | Needs Email Routing (human step) |
-| Supabase schema | Done (`supabase/mail.sql`) | Human runs it |
+| Inbound Email handler | Done in code, tested | Depends on Accounts username endpoint and shared secret; keep Email Routing off until verified |
+| Supabase schema | Done (`supabase/mail.sql`) | Run only in the separate Mail Supabase project |
 | Frontend (API-backed) | Done | Visual check still needed |
 | Auth gate | Done | Signed-out goes to `/signin?choose=1&next=` |
 | Docs | Done | README, AGENTS, TASK, PLAN, docs/ |
 
 ## Decisions made with the owner
 
-1. **Inbound is accounts-only.** A message is kept only if its name is a row in
-   `public.profiles` (Accounts' table, same Supabase project). The Worker reads it with the
-   service key. This is not a new Accounts endpoint, and Accounts is not edited.
-   - Unknown name → 550 (bounced). Bad name shape → 550, with no database call.
-   - Lookup failure → 451 (sender retries). The Worker never guesses that a user exists.
-   - Usernames are lowercased in Accounts (signup and its SQL use `LOWER(TRIM(...))`), so the
-     exact-match lookup is safe. The Worker lowercases the name too.
-2. **Attachments: not now.** Only name, type and size are kept, and bytes are dropped. The
+1. **Mail has its own Supabase project.** Mail never reads Accounts' `public.profiles`, and
+   it does not share Accounts' database key. `user_id` remains null; mailbox ownership is the
+   normalized `to_username`.
+2. **Inbound is accounts-only, through Accounts' internal API.** The Worker sends the
+   lowercased local part to `GET {AUTH_HUB_URL}/api/internal/usernames/:username` with
+   `Authorization: Bearer <ACCOUNTS_INTERNAL_TOKEN>` (the same value as Accounts'
+   `MAIL_INTERNAL_TOKEN`). Only an explicit `200 {"exists": true}` permits storage; `false`
+   gets 550, while missing secrets, network/timeout errors, non-200 responses, and bad JSON
+   get 451. Bad name shape gets 550 without a network call.
+   - The Accounts `main` docs did not yet document this endpoint when this Mail integration
+     was prepared. This code follows the owner's supplied contract; do not enable Email
+     Routing until Accounts documents/deploys the matching endpoint and the human confirms it.
+   - Unknown names are never guessed to exist. The Accounts database is not queried.
+3. **Attachments: not now.** Only name, type and size are kept, and bytes are dropped. The
    brief allows tiny files (under 200 KB total). Storing them is a later step (needs a place
    on the free tier, such as Supabase Storage).
 

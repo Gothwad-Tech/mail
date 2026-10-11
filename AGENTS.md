@@ -10,18 +10,23 @@ Gothwad Mail is a webmail app for `username@APP_DOMAIN` addresses.
 - **Mail Worker** (`worker/`): Cloudflare Worker. Serves the REST API under `/api/*` and
   handles inbound email (Email Routing `email()` handler). It is the only thing that
   talks to Supabase (service key) and Resend (API key).
-- **Database**: Supabase, the **same project as Gothwad Accounts** (shared identity DB).
-  Schema in `supabase/mail.sql`. Run by a human in the SQL editor. Never run by an agent.
+- **Database**: Supabase in a **separate Gothwad Mail project**. Schema in
+  `supabase/mail.sql`. Run by a human in the SQL editor. Never run by an agent. Mail does
+  not read Accounts' `public.profiles`; `user_id` stays null.
 - **Identity**: Gothwad Accounts (`AUTH_HUB_URL`). Mail never has its own login. It asks
   Accounts who is signed in (`/api/auth/me` with the browser's cookies, or
-  `/api/oauth/userinfo` for bearer tokens).
+  `/api/oauth/userinfo` for bearer tokens). Inbound mailbox checks also use an Accounts
+  endpoint; Mail never reads Accounts' database.
 
 Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup steps.
 
 ## Hard rules (from the project owner)
 
 1. **Do not edit the Accounts repo** (`GothwadTech/accounts`). Do not invent Accounts
-   endpoints. Read it if you need to check one (read-only). Do not merge Mail into Accounts.
+   endpoints. An endpoint may be used only if it is documented in that repo; read it
+   read-only to confirm the path and response before relying on it. If an owner supplies a
+   contract before Accounts documents it, keep production traffic disabled until the docs
+   and deployed behavior are confirmed. Do not merge Mail into Accounts.
 2. **Never hardcode the domain in logic.** Use env: `APP_DOMAIN`, `AUTH_HUB_URL`,
    `MAIL_URL`, `SUPABASE_URL`. Fallback defaults may contain `gothwadtech.com`.
 3. **Never commit real keys.** `.env.example` and `wrangler` examples hold placeholders
@@ -46,7 +51,7 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
 
 ## Working rules
 
-- Work only on branch `arena/a9ca7ef8-mail`. Push only to it.
+- Work only on the active Arena session branch (not `main`). Push only to it.
 - Check the worker with `worker/tsconfig.json`. Do **not** run the root tsconfig over
   `worker/` (the DOM and workers libs clash). The root tsconfig excludes `worker/`.
 - Before you say something works, run the checks:

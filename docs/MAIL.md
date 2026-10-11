@@ -7,17 +7,20 @@ Browser ──► mail.gothwadtech.com
              ├─ static web app (Pages)            src/
              └─ /api/*  ──► Mail Worker           worker/src/index.ts
                               ├─► Accounts: who is signed in?   AUTH_HUB_URL/api/auth/me
-                              ├─► Supabase (service key)        mail_messages table
+                              ├─► Supabase (service key)        Mail project's mail_messages
                               └─► Resend (API key)              outbound mail
 
-Internet mail ──► Email Routing (catch-all) ──► Mail Worker email() ──► Supabase
+Internet mail ──► Email Routing (catch-all) ──► Mail Worker email()
+                                                   ├─► Accounts username endpoint
+                                                   └─► Mail Supabase project
 ```
 
 - The **browser** never has a Supabase or Resend key. It only calls `/api/*` on the same
   origin.
 - The **Mail Worker** is the only place that holds the keys. They are secrets.
 - **Accounts** is the source of truth for who is signed in. Mail never stores passwords and
-  never makes its own login.
+  never makes its own login. Mail has its own Supabase project and does not read the Accounts
+  database or `public.profiles`.
 
 ## Identity and the email address
 
@@ -41,7 +44,8 @@ Upstream redirects are never followed. A redirect from Accounts counts as "not s
 
 ## The mailbox model
 
-- One table: `public.mail_messages` (see `supabase/mail.sql`).
+- One table: `public.mail_messages` in Mail's separate Supabase project (see `supabase/mail.sql`).
+- `user_id` stays null; Mail does not map usernames to Accounts auth user IDs.
 - Every row has `to_username`, the owner's username. **Every query filters on it**, using the
   username from the verified session. One user cannot read another user's row. A test covers
   this: Bob's message returns 404 when Alice asks.
@@ -104,17 +108,23 @@ The `email()` handler runs for each message that Email Routing sends to the Work
 1. Reject if the recipient is not on `APP_DOMAIN` (**550**). The check is case-insensitive.
 2. Reject if the raw message is over `MAX_INBOUND_BYTES` (default 10 MB) (**552**). This
    happens before any parsing or database call.
-3. **Accounts-only:** the name must be a real Gothwad user. The Worker checks that the name
-   has a valid shape, then reads one row from `public.profiles` (username = name) with the
-   service key. No row → **550** (bounce). Bad shape → **550** with no database call. Lookup
-   error (for example Supabase is down) → **451** (sender retries). Mail is never kept for a
-   name that was not confirmed.
+3. **Accounts-only:** the name must be a real Gothwad user. After validating its shape, the
+   Worker sends the lowercased local part to
+   `GET {AUTH_HUB_URL}/api/internal/usernames/:username` with
+   `Authorization: Bearer <ACCOUNTS_INTERNAL_TOKEN>`. Accounts responds with
+   `200 {"exists": true}` or `200 {"exists": false}`. True → continue; false → **550**.
+   Bad shape → **550** with no network call. Missing token, network/timeout failure,
+   non-200 response (including 401), or invalid JSON → **451** (sender retries). The Worker
+   never guesses that a name exists and never reads Accounts' database. HTTP failures log
+   only the status code, not the username or token. The Accounts `main` docs did not yet
+   describe this endpoint when the Mail integration was prepared; do not enable Email
+   Routing until the Accounts team confirms that the documented and deployed contract matches.
 4. Parse MIME with `postal-mime`.
 5. Store the text body (up to 200,000 characters) and the HTML body (up to 500,000
    characters). Each is truncated, not rejected.
 6. Attachments: **metadata only** (`name`, `type`, `size`). Bytes are dropped. The reader says
    so. Storing tiny files is a later step (see `PLAN.md`).
-7. Insert with `folder = 'inbox'` and `to_username` set to the local part.
+7. Insert with `folder = 'inbox'` and `to_username` set to the normalized lowercase local part.
 
 ## The reader is safe by design
 

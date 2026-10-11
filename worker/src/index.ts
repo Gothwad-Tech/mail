@@ -257,6 +257,6 @@ export default {
 
   async email(message: ForwardableEmailMessage, env: Env): Promise<void> {
     const config = readConfig(env);
-    await handleInbound(message, config, Db.from(env, config));
+    await handleInbound(message, config, env);
   },
 } satisfies ExportedHandler<Env>;
