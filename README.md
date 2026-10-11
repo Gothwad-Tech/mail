@@ -76,6 +76,10 @@ Follow **[docs/SETUP.md](docs/SETUP.md)**. It covers the separate Mail Supabase 
 optional Accounts SSO SQL, Worker secrets and deployment. Do not enable Email Routing until
 the Accounts username endpoint is confirmed working.
 
+The Worker is named `mail` in the Cloudflare dashboard and `worker/wrangler.toml` says
+`name = "mail"`. Keep the two equal — Git deploys hide a mismatch, but local commands
+(`npm run worker:deploy`, `npm run worker:secrets:list`) would target the wrong Worker.
+
 ## Docs
 
 - [docs/SETUP.md](docs/SETUP.md): human setup steps (dashboards, DNS, secrets).
