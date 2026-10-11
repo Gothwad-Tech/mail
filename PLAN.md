@@ -5,7 +5,7 @@
 | Area | Status | Notes |
 | --- | --- | --- |
 | Worker REST API (`/api/*`) | Done, tested | Session, folders, read/star/trash, drafts, send |
-| Accounts SSO (cookie) | Implemented; live handoff needs verification | `/api/auth/me`; rotated cookies forwarded; repeated chooser return was reported, so confirm production shared-cookie settings |
+| Accounts SSO (cookie) | Implemented; live handoff needs verification | `/api/auth/me`; rotated cookies forwarded; 401 only for a real Accounts 401/403, every other answer is a 503 with its own code (see `docs/MAIL.md`); confirm production shared-cookie settings |
 | Accounts SSO (bearer) | Done, tested | `/api/oauth/userinfo`. Not used by the web app yet |
 | Send via Resend | Done, not live-tested | Needs Resend key and verified domain |
 | Daily send cap | Done | Default 30 (`DAILY_SEND_LIMIT`) |
@@ -37,8 +37,11 @@
 ## Known gaps (not blocking)
 
 - **Live Accounts SSO still needs verification.** A user reported that account selection returns
-  to the chooser. Mail now detects that failed handoff and stops the loop; check the deployed
-  Accounts cookie Domain and `GET /api/session` status as described in `docs/MAIL.md`.
+  to the chooser. Mail no longer reports a broken Accounts answer as a signed-out 401, so the
+  `/api/session` status now names the failing branch (401 = no shared cookie, 503
+  `accounts_user_invalid` = profile row has no username, 503 `accounts_unexpected_response` =
+  `/api/*` not reaching the Accounts Worker). Check the deployed Accounts cookie Domain and the
+  codes as described in `docs/MAIL.md`.
 - No Undo for moving to Trash. No "restore from Trash" yet.
 - Search filters only the list already loaded in the browser.
 - Sidebar folder counts are not shown (there is no cheap server count).

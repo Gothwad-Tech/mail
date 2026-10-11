@@ -149,15 +149,19 @@ If `/api/health` returns HTML, the route is not matching. Fix the route order be
 1. Open Accounts and Mail over **HTTPS in the same browser profile**.
 2. Sign in to Accounts, then open Mail. The Mail `/api/session` request should return **200**.
    With no Accounts session, it should return **401** with a `signinUrl`.
-3. If Mail returns to Accounts after a chooser selection, check the `/api/session` status in
-   the browser Network panel. A repeated **401** means Mail did not verify the Accounts session.
+3. If Mail returns to Accounts after a chooser selection, check the `/api/session` status and
+   its JSON `error` code in the browser Network panel. A repeated **401 `unauthenticated`**
+   means Mail did not get a valid shared Accounts session. A **503** means Accounts answered
+   but Mail could not read the session: `accounts_user_invalid` (profile row has no username),
+   `accounts_unexpected_response` (`/api/*` is not reaching the Accounts Worker, or Accounts
+   redirected), or `auth_unavailable` (Accounts down / wrong `AUTH_HUB_URL`).
 4. In browser storage, inspect cookie **names and attributes only**. `gothwad_at` and
    `gothwad_rt` should use `Domain=.APP_DOMAIN` (for example `.gothwadtech.com`), Path `/`,
    and Secure. Never copy cookie values into chat, logs, or tickets.
 
 Accounts must set these cookies on the parent Gothwad domain for subdomain SSO. If the
 cookies are missing or host-only, correct the Accounts deployment/configuration; changing
-Mail's `next` URL will not fix that. See [docs/MAIL.md](MAIL.md#if-accounts-keeps-showing-the-chooser) for troubleshooting details.
+Mail's `next` URL will not fix that. See [docs/MAIL.md](MAIL.md#if-accounts-keeps-showing-the-chooser) for the full status table and troubleshooting details.
 
 ---
 
@@ -245,6 +249,18 @@ npm run test:ui       # jsdom smoke test; needs the Worker running and a signed-
 `test:ui` sends the cookie `gothwad_at=good` by default. Point it at a Worker that accepts
 that cookie, or set `MAIL_TEST_COOKIE` to a real cookie from your own browser session.
 Never paste a real session cookie into chat or into a committed file.
+
+The suite expects a local Accounts stub that answers `GET /api/auth/me` like the real one:
+
+| Cookie sent by the test | Stub answer |
+| --- | --- |
+| `gothwad_at=good` | `200 {authenticated: true, user: {username: "alice", first_name: "Alice"}}` |
+| `gothwad_at=no_username` | `200 {authenticated: true, user: {username: ""}}` |
+| anything else (no usable cookie) | `401` |
+
+The `no_username` case checks the 503 `accounts_user_invalid` screen (error message plus
+Retry, no redirect to Accounts). If the stub does not know that cookie, that one test skips
+itself and says so; the other tests still run.
 
 ---
 

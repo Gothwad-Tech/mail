@@ -76,3 +76,8 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
 - `decodeURIComponent` throws on bad `%` input. It is wrapped and returns 400.
 - The Worker must forward rotated `gothwad_*` Set-Cookie headers from Accounts to the
   browser. Dropping them signs the user out of Accounts (refresh-token rotation).
+- Do **not** collapse an Accounts answer Mail cannot read (3xx, HTML, missing `authenticated`,
+  unusable username) into a signed-out 401. That made a broken Accounts handoff look like an
+  expired session and bounced users through the chooser. Mail returns 401 only for an Accounts
+  401/403; everything else is a 503 with its own code (`accounts_user_invalid`,
+  `accounts_unexpected_response`, `auth_unavailable`). See the table in `docs/MAIL.md`.

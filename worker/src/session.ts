@@ -11,10 +11,23 @@
 //     {AUTH_HUB_URL}/api/oauth/userinfo with the access token.
 //
 // Email is DERIVED here as username@APP_DOMAIN (Accounts stores username only).
+//
+// Status rule (see docs/MAIL.md, "If Accounts keeps showing the chooser"):
+//   401/403 from Accounts = really signed out -> Mail 401 + signinUrl.
+//   Anything else that Mail cannot read (3xx, HTML, missing authenticated flag,
+//   unusable username, 5xx, timeout) = 503 with its own code, NEVER a 401.
+//   A 401 must mean "signed out", otherwise the browser bounces back to the
+//   Accounts chooser in a loop.
 // =============================================================================
 
 import type { Config } from './config';
 import { HttpError } from './http';
+
+// Codes Mail returns when the Accounts handoff itself is broken. The web app
+// shows a retry message for these and must never redirect to Accounts.
+export const AUTH_UNAVAILABLE = 'auth_unavailable';
+export const ACCOUNTS_UNEXPECTED_RESPONSE = 'accounts_unexpected_response';
+export const ACCOUNTS_USER_INVALID = 'accounts_user_invalid';
 
 export interface Session {
   username: string;
@@ -82,20 +95,44 @@ export async function resolveSession(request: Request, config: Config): Promise<
   return null;
 }
 
+// Shape of Accounts' /api/auth/me body that Mail relies on. Everything is
+// optional here until it has been checked: a misrouted /api/* answers with
+// HTML, not with this.
+interface AccountsMeBody {
+  authenticated?: boolean;
+  user?: { username?: unknown; first_name?: unknown; last_name?: unknown };
+}
+
+const AUTH_UNAVAILABLE_MESSAGE = 'Accounts is not reachable right now.';
+const ACCOUNTS_UNEXPECTED_MESSAGE =
+  'Accounts did not answer with a session Mail can read. This is an Accounts routing problem, not a signed-out user. Try again in a minute, or contact the admin.';
+const ACCOUNTS_USER_INVALID_MESSAGE =
+  'Your Gothwad Account is signed in, but Mail could not read your username. Try again in a minute, or contact the admin.';
+
 async function resolveCookie(request: Request, cookie: string, config: Config): Promise<Session | null> {
   const res = await upstream(`${config.authHubUrl}/api/auth/me`, { cookie, accept: 'application/json' });
   keepAccountsCookies(request, res);
-  if (isUnauthenticated(res.status)) return null;
-  if (!res.ok) throw new HttpError(503, 'auth_unavailable', 'Accounts is not reachable right now.');
 
-  const body = (await res.json().catch(() => null)) as {
-    authenticated?: boolean;
-    user?: { username?: string; first_name?: string; last_name?: string };
-  } | null;
-  if (!body?.authenticated) return null;
+  // Only 401/403 means Accounts checked and the user really is signed out.
+  if (isSignedOut(res.status)) return null;
+  assertAccountsUsable(res);
+
+  const body = (await res.json().catch(() => null)) as AccountsMeBody | null;
+  // A 200 that is not Mail's JSON (e.g. the HTML a misrouted /api/* serves) or
+  // that has no authenticated flag is a broken handoff, not a signed-out user.
+  if (!body || typeof body.authenticated !== 'boolean') {
+    warnUpstreamFailure(ACCOUNTS_UNEXPECTED_RESPONSE, res);
+    throw new HttpError(503, ACCOUNTS_UNEXPECTED_RESPONSE, ACCOUNTS_UNEXPECTED_MESSAGE);
+  }
+  if (!body.authenticated) return null;
 
   const username = normalizeUsername(body.user?.username);
-  if (!username) return null;
+  if (!username) {
+    // Accounts says the user IS signed in. Mail just cannot read the username,
+    // so a 401 here would only restart the chooser loop. 503 with its own code.
+    warnUpstreamFailure(ACCOUNTS_USER_INVALID, res);
+    throw new HttpError(503, ACCOUNTS_USER_INVALID, ACCOUNTS_USER_INVALID_MESSAGE);
+  }
 
   const name = [body.user?.first_name, body.user?.last_name].filter(Boolean).join(' ').trim() || null;
   return { username, email: deriveEmail(username, config.appDomain), name, source: 'cookie' };
@@ -106,21 +143,61 @@ async function resolveBearer(authHeader: string, config: Config): Promise<Sessio
     authorization: authHeader,
     accept: 'application/json',
   });
-  if (isUnauthenticated(res.status)) return null;
-  if (!res.ok) throw new HttpError(503, 'auth_unavailable', 'Accounts is not reachable right now.');
+  // Same rule as the cookie path: a real 401/403 is signed out, everything else
+  // Mail cannot read is an upstream failure and gets a 503.
+  if (isSignedOut(res.status)) return null;
+  assertAccountsUsable(res);
 
   const body = (await res.json().catch(() => null)) as {
-    preferred_username?: string;
+    preferred_username?: unknown;
     name?: string;
   } | null;
-  const username = normalizeUsername(body?.preferred_username);
-  if (!username) return null;
-  return { username, email: deriveEmail(username, config.appDomain), name: body?.name ?? null, source: 'bearer' };
+  if (!body || typeof body !== 'object') {
+    warnUpstreamFailure(ACCOUNTS_UNEXPECTED_RESPONSE, res);
+    throw new HttpError(503, ACCOUNTS_UNEXPECTED_RESPONSE, ACCOUNTS_UNEXPECTED_MESSAGE);
+  }
+  const username = normalizeUsername(body.preferred_username);
+  if (!username) {
+    warnUpstreamFailure(ACCOUNTS_USER_INVALID, res);
+    throw new HttpError(503, ACCOUNTS_USER_INVALID, ACCOUNTS_USER_INVALID_MESSAGE);
+  }
+  return { username, email: deriveEmail(username, config.appDomain), name: body.name ?? null, source: 'bearer' };
 }
 
-// 3xx counts as "not signed in": we never follow redirects to Accounts pages.
-function isUnauthenticated(status: number): boolean {
-  return status === 401 || status === 403 || (status >= 300 && status < 400);
+/** 401/403 only: Accounts looked at the credentials and said "not signed in". */
+function isSignedOut(status: number): boolean {
+  return status === 401 || status === 403;
+}
+
+/**
+ * Turns an Accounts answer Mail cannot use into a 503. Callers handle the
+ * signed-out cases first, so reaching here means Mail does not know who the
+ * user is: that must never be reported to the browser as a 401.
+ */
+function assertAccountsUsable(res: Response): void {
+  // We always send redirect: 'manual'. A 3xx therefore means the request never
+  // reached the Accounts Worker (/api/* route missing) or Accounts is
+  // redirecting. Following it would also hand the user's cookies to the host
+  // the redirect points at.
+  if (res.status >= 300 && res.status < 400) {
+    warnUpstreamFailure(ACCOUNTS_UNEXPECTED_RESPONSE, res);
+    throw new HttpError(503, ACCOUNTS_UNEXPECTED_RESPONSE, ACCOUNTS_UNEXPECTED_MESSAGE);
+  }
+  if (!res.ok) {
+    warnUpstreamFailure(AUTH_UNAVAILABLE, res);
+    throw new HttpError(503, AUTH_UNAVAILABLE, AUTH_UNAVAILABLE_MESSAGE);
+  }
+}
+
+/**
+ * One warn line per failed upstream check: our error code, the upstream status
+ * and its content-type. That is enough to tell the branches apart in the Worker
+ * log. Never log the cookie, tokens, or the response body.
+ */
+function warnUpstreamFailure(code: string, res: Response | null): void {
+  const status = res ? String(res.status) : 'none';
+  const contentType = res?.headers.get('content-type') || 'none';
+  console.warn(`accounts_check_failed code=${code} status=${status} content-type=${contentType}`);
 }
 
 async function upstream(url: string, headers: Record<string, string>): Promise<Response> {
@@ -128,11 +205,13 @@ async function upstream(url: string, headers: Record<string, string>): Promise<R
     return await fetch(url, {
       method: 'GET',
       headers,
-      redirect: 'manual', // a redirect here would mean "not signed in"; do not follow it
+      redirect: 'manual', // a redirect here is an Accounts routing problem; do not follow it
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
   } catch {
-    throw new HttpError(503, 'auth_unavailable', 'Accounts is not reachable right now.');
+    // Network error or timeout: there is no upstream status to report.
+    warnUpstreamFailure(AUTH_UNAVAILABLE, null);
+    throw new HttpError(503, AUTH_UNAVAILABLE, AUTH_UNAVAILABLE_MESSAGE);
   }
 }
 
