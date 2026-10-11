@@ -35,6 +35,7 @@ interface Seen {
   headers: Headers;
   body: string | null;
   signal: AbortSignal | null;
+  redirect: RequestRedirect | null;
 }
 
 let seen: Seen[] = [];
@@ -51,6 +52,7 @@ function installFetch() {
       headers,
       body: typeof init?.body === 'string' ? init.body : null,
       signal: init?.signal ?? null,
+      redirect: init?.redirect ?? null,
     };
     seen.push(s);
     return stub(s);
@@ -111,10 +113,154 @@ test('unauthenticated list returns 401 with the Accounts signin base URL', async
   assert.equal(body.signinUrl, 'https://accounts.test/signin?choose=1');
 });
 
-test('redirect from Accounts counts as signed out (never followed)', async () => {
-  stub = () => new Response(null, { status: 302, headers: { location: 'https://accounts.test/signin' } });
-  const res = await worker.fetch(req('/api/session', { cookie: 'gothwad_at=anything' }), baseEnv);
+// -----------------------------------------------------------------------------
+// /api/session status table. A 401 may ONLY mean "Accounts says signed out";
+// every other broken handoff must be a 503 with its own code, otherwise the
+// browser bounces back to the Accounts chooser in a loop.
+// -----------------------------------------------------------------------------
+
+/** Accounts stub that answers /api/auth/me with exactly what `make` returns. */
+function accountsMeStub(make: (s: Seen) => Response): Stub {
+  return (s) => {
+    if (s.url.host === 'accounts.test' && s.url.pathname === '/api/auth/me') return make(s);
+    return new Response('x', { status: 599 }); // Supabase is not needed by these tests
+  };
+}
+
+async function sessionResponse(env: Env = baseEnv): Promise<{ res: Response; body: Record<string, unknown> }> {
+  const res = await handleRequest(req('/api/session', { cookie: 'gothwad_at=fresh' }), env);
+  const body = (await res.json()) as Record<string, unknown>;
+  return { res, body };
+}
+
+test('Accounts 401 -> Mail 401 with signinUrl (real signed-out answer)', async () => {
+  stub = accountsMeStub(() => Response.json({ error: 'invalid_token' }, { status: 401 }));
+  const { res, body } = await sessionResponse();
   assert.equal(res.status, 401);
+  assert.equal(body.error, 'unauthenticated');
+  assert.equal(body.signinUrl, 'https://accounts.test/signin?choose=1');
+});
+
+test('Accounts 403 -> Mail 401 with signinUrl', async () => {
+  stub = accountsMeStub(() => Response.json({ error: 'forbidden' }, { status: 403 }));
+  const { res, body } = await sessionResponse();
+  assert.equal(res.status, 401);
+  assert.equal(body.error, 'unauthenticated');
+  assert.equal(body.signinUrl, 'https://accounts.test/signin?choose=1');
+});
+
+test('Accounts 302 -> Mail 503 accounts_unexpected_response (never followed)', async () => {
+  stub = accountsMeStub(
+    () => new Response(null, { status: 302, headers: { location: 'https://accounts.test/signin' } })
+  );
+  const { res, body } = await sessionResponse();
+  assert.equal(res.status, 503);
+  assert.equal(body.error, 'accounts_unexpected_response');
+  assert.equal(body.signinUrl, undefined, 'a 503 must not carry a sign-in link');
+  const accountsCall = seen.find((s) => s.url.host === 'accounts.test');
+  assert.equal(accountsCall?.redirect, 'manual', 'the upstream redirect must not be followed');
+});
+
+test('Accounts 200 with an HTML body -> Mail 503 accounts_unexpected_response', async () => {
+  stub = accountsMeStub(
+    () =>
+      new Response('<html><body>Not found</body></html>', {
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      })
+  );
+  const { res, body } = await sessionResponse();
+  assert.equal(res.status, 503);
+  assert.equal(body.error, 'accounts_unexpected_response');
+});
+
+test('Accounts 200 without an authenticated field -> Mail 503 accounts_unexpected_response', async () => {
+  stub = accountsMeStub(() => Response.json({ user: { username: 'pawan' } }));
+  const { res, body } = await sessionResponse();
+  assert.equal(res.status, 503);
+  assert.equal(body.error, 'accounts_unexpected_response');
+});
+
+test('Accounts 200 authenticated with username "Pawan" -> Mail 200 username pawan', async () => {
+  stub = accountsMeStub(() =>
+    Response.json({ authenticated: true, user: { username: 'Pawan', first_name: 'Pawan', last_name: '' } })
+  );
+  const { res, body } = await sessionResponse();
+  assert.equal(res.status, 200);
+  const user = body.user as { username: string; email: string; name: string | null };
+  assert.equal(user.username, 'pawan');
+  assert.equal(user.email, 'pawan@gothwadtech.com');
+  assert.equal(user.name, 'Pawan');
+});
+
+test('Accounts 200 authenticated without a usable username -> Mail 503 accounts_user_invalid', async () => {
+  stub = accountsMeStub(() => Response.json({ authenticated: true, user: { username: '' } }));
+  const { res, body } = await sessionResponse();
+  assert.equal(res.status, 503);
+  assert.equal(body.error, 'accounts_user_invalid');
+  assert.equal(body.signinUrl, undefined, 'the user IS signed in, so no sign-in link');
+});
+
+test('Accounts 200 authenticated with a missing user object -> Mail 503 accounts_user_invalid', async () => {
+  stub = accountsMeStub(() => Response.json({ authenticated: true }));
+  const { res, body } = await sessionResponse();
+  assert.equal(res.status, 503);
+  assert.equal(body.error, 'accounts_user_invalid');
+});
+
+test('Accounts unreachable (fetch throws) -> Mail 503 auth_unavailable', async () => {
+  stub = () => {
+    throw new Error('connect ECONNREFUSED');
+  };
+  const { res, body } = await sessionResponse();
+  assert.equal(res.status, 503);
+  assert.equal(body.error, 'auth_unavailable');
+});
+
+test('failures log one warn line with status, content-type and code (no cookie, no body)', async () => {
+  const warns: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warns.push(args.map(String).join(' '));
+  };
+  try {
+    stub = accountsMeStub(
+      () =>
+        new Response('<html>SECRET_BODY</html>', {
+          status: 200,
+          headers: { 'content-type': 'text/html' },
+        })
+    );
+    const res = await handleRequest(req('/api/session', { cookie: 'gothwad_at=SECRET_COOKIE_VALUE' }), baseEnv);
+    assert.equal(res.status, 503);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(warns.length, 1, 'exactly one warn line per failure');
+  assert.match(warns[0], /code=accounts_unexpected_response/);
+  assert.match(warns[0], /status=200/);
+  assert.match(warns[0], /content-type=text\/html/);
+  assert.equal(warns[0].includes('SECRET_COOKIE_VALUE'), false, 'never log the cookie');
+  assert.equal(warns[0].includes('SECRET_BODY'), false, 'never log the response body');
+});
+
+test('a network failure logs the code with no upstream status', async () => {
+  const warns: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warns.push(args.map(String).join(' '));
+  };
+  try {
+    stub = () => {
+      throw new Error('connect ECONNREFUSED');
+    };
+    await handleRequest(req('/api/session', { cookie: 'gothwad_at=fresh' }), baseEnv);
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.equal(warns.length, 1);
+  assert.match(warns[0], /code=auth_unavailable status=none content-type=none/);
 });
 
 test('session returns derived email and remaining sends for a cookie session', async () => {

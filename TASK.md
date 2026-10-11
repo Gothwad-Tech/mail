@@ -2,6 +2,58 @@
 
 Updated every session. Newest first.
 
+## 2026-10-11 — Stop calling every Accounts problem "signed out"
+
+**Goal:** Fix "Accounts sent you back to Mail, but Mail could not verify your sign-in".
+Evidence from a real failing browser: the `gothwad_at` cookie IS sent to
+`mail.gothwadtech.com/api/session`, the JWT is fresh, and the 401 body is Mail's own
+`requireSession` body with no `Set-Cookie`. So the cookie handoff worked and the failure was
+in Mail's verification call to Accounts — which Mail collapsed into "signed out" (and from
+there into an endless chooser).
+
+**Done**
+- `worker/src/session.ts`: a 401 from Mail now means **only** "Accounts answered 401/403".
+  Everything else Mail cannot read is a 503 with its own code:
+  - `accounts_user_invalid` — Accounts said `authenticated: true` but `user.username` is
+    missing or fails `normalizeUsername` (was a 401).
+  - `accounts_unexpected_response` — a 3xx from Accounts (never followed), or a 200 that is
+    not Mail's JSON / has no `authenticated` flag, e.g. HTML from a misrouted `/api/*`
+    (was a 401).
+  - `auth_unavailable` — network error, timeout, 5xx (unchanged).
+- One `console.warn` line per failure: code + upstream status + upstream content-type
+  (`accounts_check_failed ...`). Cookie values, tokens and response bodies are never logged.
+- `redirect: 'manual'` and the `keepAccountsCookies` / `takeUpstreamCookies` handling are
+  untouched.
+- Frontend: `classifySessionFailure` in `src/hooks/useSession.ts` only redirects for a **401
+  with a signinUrl**; every 503 shows the error screen with Retry. The
+  `accounts_user_invalid` / `accounts_unexpected_response` message now says the account is
+  signed in but Mail could not load the profile (no "cookie may be expired" talk). The
+  `__mail_auth_return` loop guard is unchanged.
+- Tests: 10 new/updated Worker tests (full status table, never-follow-redirect, log line
+  without secrets), 3 new frontend tests in `tests/auth-redirect.test.ts`, and 1 new jsdom
+  smoke test for the 503 screen (skips itself if the local Accounts stub lacks the fixture).
+- Docs: `docs/MAIL.md` now has the `/api/session` status table and rewritten chooser
+  troubleshooting; `docs/SETUP.md` got the same codes plus the `test:ui` stub expectations.
+
+**Verified in this sandbox**
+- `npm run lint` — pass. `npm run build` — pass (usual Vite `configLoader: 'native'` warning).
+- `npm run test:worker` — 48 tests pass. `npm run test:auth` — 5 tests pass.
+- Real `wrangler dev` (workerd) with temporary local Accounts/Supabase stubs: `/api/session`
+  returned 200 / 401 / 503 `accounts_user_invalid` / 503 `accounts_unexpected_response`
+  (HTML and 302) / 503 `auth_unavailable` exactly as the table says, and the Worker log
+  showed one `accounts_check_failed` line per failure with no cookie or body content.
+- `npm run test:ui` — 4 tests pass (including the new 503 screen). Stubs and `worker/.dev.vars`
+  were removed afterwards; nothing extra is committed.
+
+**Human verification still needed (production)**
+1. Same browser profile: open `https://accounts.gothwadtech.com/api/auth/me` and check only
+   the status, that it is JSON, and `authenticated` / `user.username`. Do not share the body.
+2. Reload `https://mail.gothwadtech.com` — the inbox should load. If not, the `/api/session`
+   status and `error` code name the failing branch (see the table in `docs/MAIL.md`).
+3. Never paste cookie values, JWTs or refresh tokens into a PR, an issue or chat.
+
+---
+
 ## 2026-10-11 — Diagnose the Accounts chooser return loop
 
 **Goal:** Investigate the report that selecting an already-signed-in Gothwad account returns

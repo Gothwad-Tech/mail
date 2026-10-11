@@ -13,6 +13,16 @@ import type { ComposeData, EmailFolder } from '../types/email';
 
 const API_BASE = '/api';
 
+// Error codes the Worker can send back. The 503 codes mean the Gothwad Account
+// is signed in but Mail could not read it, so the app must show a retry message
+// instead of sending the browser to Accounts again (that looped the chooser).
+export const API_ERROR = {
+  unauthenticated: 'unauthenticated',
+  authUnavailable: 'auth_unavailable',
+  accountsUserInvalid: 'accounts_user_invalid',
+  accountsUnexpectedResponse: 'accounts_unexpected_response',
+} as const;
+
 export interface SessionUser {
   username: string;
   email: string;

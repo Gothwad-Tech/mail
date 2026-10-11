@@ -161,3 +161,41 @@ test('failed Accounts return is explained instead of redirecting to the chooser 
   document.body.innerHTML = '<div id="root"></div>';
   window.history.replaceState(window.history.state, '', '/');
 });
+
+test('a 503 session check shows the profile error with Retry and does not redirect', async (t) => {
+  // The Worker answers 503 accounts_user_invalid when Accounts says the user is
+  // signed in but sends no usable username. The app must show that with a Retry
+  // button instead of sending the browser back to the Accounts chooser.
+  activeCookie = 'gothwad_at=no_username';
+  const probe = await fetch('/api/session');
+  if (probe.status !== 503) {
+    t.skip(
+      `the local Accounts stub must answer 200 {authenticated:true,user:{username:""}} for ` +
+        `cookie gothwad_at=no_username; the Worker answered ${probe.status}`
+    );
+    activeCookie = GOOD_COOKIE;
+    return;
+  }
+  assert.equal(((await probe.json()) as { error: string }).error, 'accounts_user_invalid');
+
+  const before = window.location.href;
+  const root = createRoot(document.getElementById('root')!);
+  await act(async () => {
+    root.render(createElement(App));
+  });
+
+  await waitFor(() => text().includes('could not load your profile'), 'profile error message');
+  assert.equal(text().includes('Redirecting you to sign in'), false, 'a 503 must not redirect');
+  assert.equal(text().includes('cookie'), false, 'no expired-cookie wording for a 503');
+  assert.ok(
+    [...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === 'Try again'),
+    'Retry button is shown'
+  );
+  assert.equal(window.location.href, before, 'the browser was not sent to Accounts');
+
+  await act(async () => {
+    root.unmount();
+  });
+  document.body.innerHTML = '<div id="root"></div>';
+  activeCookie = GOOD_COOKIE;
+});

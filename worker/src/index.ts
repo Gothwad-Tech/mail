@@ -27,7 +27,10 @@ import { sendViaResend } from './resend';
 async function requireSession(request: Request, config: Config): Promise<Session> {
   const session = await resolveSession(request, config);
   if (!session) {
-    // The browser uses signinUrl to send the user to Accounts (then back to Mail).
+    // 401 means ONLY "Accounts says this browser is signed out". The browser
+    // uses signinUrl to send the user to Accounts (then back to Mail).
+    // Every other failure throws its own 503 from session.ts, so a broken
+    // Accounts answer can never look like a signed-out user.
     throw new HttpError(401, 'unauthenticated', 'Please sign in.', { signinUrl: signinBaseUrl(config) });
   }
   return session;

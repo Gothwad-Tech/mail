@@ -38,35 +38,73 @@ Internet mail ──► Email Routing (catch-all) ──► Mail Worker email()
 5. Bearer tokens (`Authorization: Bearer ...`) are checked with
    `GET {AUTH_HUB_URL}/api/oauth/userinfo`. This is for future clients. The web app does not
    use it.
-6. Any Accounts failure other than "signed out" (timeout, 5xx) gives **503**, not a fake
-   signed-out state.
+6. **A 401 from Mail may only ever mean "Accounts says this browser is signed out".** Any
+   other answer Mail cannot read is a **503** with its own error code (table below), so a
+   broken Accounts handoff can never be mistaken for a signed-out user and bounce the browser
+   back to the chooser in a loop.
+7. Upstream redirects are never followed (`redirect: 'manual'`). A 3xx from Accounts is an
+   Accounts routing problem, reported as 503 `accounts_unexpected_response`.
 
-Upstream redirects are never followed. A redirect from Accounts counts as "not signed in".
+#### `/api/session` status table
+
+| What Accounts `GET /api/auth/me` answered | Mail `GET /api/session` |
+| --- | --- |
+| 401 / 403 (real signed-out) | 401 with `signinUrl` (unchanged) |
+| 200, `authenticated: false` | 401 with `signinUrl` (unchanged) |
+| 200, `authenticated: true`, usable `user.username` | 200 session (unchanged) |
+| 200, `authenticated: true`, username missing or invalid | 503 `accounts_user_invalid` |
+| 200, body is not Mail's JSON (e.g. HTML from a misrouted `/api/*`) or has no `authenticated` field | 503 `accounts_unexpected_response` |
+| 3xx redirect from Accounts | 503 `accounts_unexpected_response` |
+| network error, timeout, 5xx | 503 `auth_unavailable` (unchanged) |
+
+Every failure above logs **one** `console.warn` line with the code, the upstream status and
+the upstream content-type, for example
+`accounts_check_failed code=accounts_unexpected_response status=200 content-type=text/html`.
+Cookie values, tokens and response bodies are never logged.
+
+The web app only redirects to Accounts for a **401 with a `signinUrl`**. Every 503 shows the
+error screen with a **Retry** button. For `accounts_user_invalid` and
+`accounts_unexpected_response` the message says the Gothwad Account is signed in but Mail
+could not load the profile (it deliberately does not talk about an expired cookie).
 
 ### If Accounts keeps showing the chooser
 
 If the browser returns to Mail and immediately lands on Accounts' chooser again, the `next`
 URL has already worked: Mail received the marked return URL, but `GET /api/session` still
-could not verify the Accounts session. Mail now stops after that return and shows a message
+could not verify the Accounts session. Mail stops after that return and shows a message
 instead of sending the browser through an endless chooser loop.
 
-The most likely cause is that Mail did not receive a valid shared Accounts session cookie.
-Check these items in the **same browser profile** (do not copy or share cookie values):
+Check the status and the `error` code of `https://mail.gothwadtech.com/api/session` in the
+browser's Network panel (only the status code and the `error` field — never paste a body that
+may contain tokens):
 
-- In the browser's Network panel, check the status of `https://mail.gothwadtech.com/api/session`.
-  A **401** after returning from Accounts means the session was not verified; a **503** means
-  Mail could not reach Accounts.
-- In browser storage, check only that the `gothwad_at` and `gothwad_rt` cookies exist and
+- **401 `unauthenticated`** — Mail received no valid shared Accounts session cookie.
+  In browser storage, check only that the `gothwad_at` and `gothwad_rt` cookies exist and
   their **Domain** is `.APP_DOMAIN` (for example, `.gothwadtech.com`), Path is `/`, and
-  Secure is enabled. Never paste the cookie values into chat or a ticket.
-- Confirm the Accounts Worker deployed to `AUTH_HUB_URL` sets the session cookies for the
-  parent domain, and that Mail's `AUTH_HUB_URL` points to that same Accounts deployment.
-  Current Accounts code is intended to share these cookies across Gothwad subdomains.
+  Secure is enabled. Never paste the cookie values into chat or a ticket. If they are
+  missing, host-only, expired, or belong to a different browser profile, Mail cannot repair
+  that from its own origin; the Accounts deployment/session-cookie setup needs attention.
+- **503 `accounts_user_invalid`** — the user IS signed in, but the Accounts profile row has no
+  username Mail can use. Accounts-side fix (falls back to the JWT metadata); if it still
+  fails, check the Accounts `profiles` row for that user.
+- **503 `accounts_unexpected_response`** — `/api/*` on `accounts.gothwadtech.com` is not
+  reaching the Accounts Worker, or Accounts is redirecting. Check the Cloudflare Worker route
+  `accounts.gothwadtech.com/api/*`.
+- **503 `auth_unavailable`** — the Accounts Worker is down or Mail's `AUTH_HUB_URL` points at
+  the wrong deployment.
 
-If the cookies are missing, host-only, expired, or belong to a different browser profile,
-Mail cannot repair that from its own origin. The Accounts deployment/session-cookie setup
-needs attention. Signing in again in the same browser may refresh them; if the chooser still
-loops, have the admin verify the Accounts deployment and cookie Domain configuration.
+Confirm that Accounts' `AUTH_HUB_URL` deployment sets the session cookies for the parent
+domain, and that Mail's `AUTH_HUB_URL` points to that same deployment.
+
+### Verification after both sides are deployed
+
+1. In the same browser profile (do not share the body — it contains tokens), open
+   `https://accounts.gothwadtech.com/api/auth/me` and check **only** the status code, that it
+   is JSON, and the `authenticated` / `user.username` fields.
+2. Reload `https://mail.gothwadtech.com`. Expected: the inbox loads (`/api/session` = 200).
+   If it does not, the `/api/session` status and JSON `error` code now say which branch
+   failed — use the list above.
+3. Never paste cookie values, JWTs or refresh tokens into an issue, a PR or chat.
 
 ## The mailbox model
 
