@@ -163,7 +163,7 @@ All JSON. Everything except `/api/health` needs a signed-in session.
 
 | Method | Path | What it does |
 | --- | --- | --- |
-| GET | `/api/health` | Liveness. No auth. |
+| GET | `/api/health` | Liveness, no auth. Also reports `configured` — booleans for `supabaseUrl`, `supabaseServiceKey`, `accountsInternalToken`, `resendApiKey`. Use it after a deploy to see that nothing was wiped; it never prints a key or a URL. |
 | GET | `/api/session` | Who am I, my address, `accountUrl`, `sendRemainingToday`. |
 | GET | `/api/mail/messages?folder=inbox\|starred\|sent\|drafts\|trash&limit=&before=` | One page, newest first (max 100). Returns `nextBefore` for "Load more". |
 | GET | `/api/mail/messages/:id` | One message with its body. Opening a message does not mark it read; the browser does that with PATCH. |

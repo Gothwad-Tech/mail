@@ -1,15 +1,21 @@
 # =============================================================================
 # Gothwad Mail Worker config. NO SECRETS IN THIS FILE.
 #
-# Secrets (set in the dashboard or with `wrangler secret put`):
-#   ACCOUNTS_INTERNAL_TOKEN     (same value as MAIL_INTERNAL_TOKEN in Accounts;
-#                               set with `wrangler secret put ACCOUNTS_INTERNAL_TOKEN`)
-#   SUPABASE_SERVICE_ROLE_KEY   (sb_secret_... or legacy eyJ... service_role)
-#   RESEND_API_KEY              (re_...)
+# THIS FILE IS THE SOURCE OF TRUTH. Whatever is typed in the Cloudflare
+# dashboard under "Variables" (plain text) is overwritten by the next deploy;
+# only encrypted "Secrets" survive a deploy untouched. `keep_vars = true`
+# below stops a deploy from deleting dashboard variables that are NOT listed
+# here. A name that IS listed here always takes this file's value - that is
+# why SUPABASE_URL is filled in and never left as a placeholder.
 #
-# Before the first deploy, replace SUPABASE_URL with your project URL.
-# That is public config, not a secret. The Worker refuses to call Supabase
-# while the placeholder is still in place.
+# Secrets (never in this file; set in the dashboard as type "Secret", or from
+# your machine with `npm run worker:secrets`):
+#   ACCOUNTS_INTERNAL_TOKEN     same value as MAIL_INTERNAL_TOKEN in Accounts
+#   SUPABASE_SERVICE_ROLE_KEY   Mail project's sb_secret_... (or legacy eyJ... service_role)
+#   RESEND_API_KEY              re_...
+#
+# See which secret NAMES the deployed Worker has (names only, never values):
+#   npm run worker:secrets:list
 #
 # Route (production): mail.gothwadtech.com/api/*  -> this Worker
 # Email Routing (catch-all *@gothwadtech.com)     -> this Worker's email() handler
@@ -19,6 +25,10 @@
 name = "gothwad-mail-api"
 main = "src/index.ts"
 compatibility_date = "2025-09-01"
+
+# Do not delete dashboard-only variables on deploy (text vars are removed by
+# default). Secrets are never deleted by a deploy either way.
+keep_vars = true
 
 [vars]
 APP_DOMAIN = "gothwadtech.com"
@@ -33,7 +43,10 @@ AUTH_HUB_URL = "https://api.gothwadtech.com"
 # accountUrl). Optional; falls back to AUTH_HUB_URL when unset.
 AUTH_SIGNIN_URL = "https://accounts.gothwadtech.com"
 MAIL_URL = "https://mail.gothwadtech.com"
-SUPABASE_URL = "https://YOUR_PROJECT_REF.supabase.co"
+# Public project URL of the SEPARATE Mail Supabase project (not Accounts').
+# Not a secret: it ships inside every Supabase client. The Worker refuses to
+# call Supabase if this ever becomes a placeholder again.
+SUPABASE_URL = "https://womkqxzbiwgfudxbwkau.supabase.co"
 ENVIRONMENT = "production"
 # Extra allowed origins, comma-separated (e.g. a Pages preview URL). Empty = none.
 ALLOWED_ORIGINS = ""

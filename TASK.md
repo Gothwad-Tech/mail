@@ -2,6 +2,62 @@
 
 Updated every session. Newest first.
 
+## 2026-10-11 — Worker config stops losing values: keep_vars, real SUPABASE_URL, guard test
+
+**Report from the owner:** Supabase-related values and secrets seem to be gone at the next
+build, and the TOML was supposed to be updated when they were added, but never was.
+
+**Root cause (Cloudflare behaviour, not a bug in this repo):** the Worker is deployed from the
+dashboard/Git path, which treats the committed config as the source of truth. Plain-text
+dashboard variables are replaced or deleted by every deploy; encrypted **Secrets** are never
+deleted. On top of that, `SUPABASE_URL` in `wrangler.toml` was still
+`https://YOUR_PROJECT_REF.supabase.co`, so `isSupabaseConfigured()` was false and the Worker
+refused every Supabase call (`not_configured` / `supabase_not_configured`) even when the
+service key was set.
+
+**Done**
+- `worker/wrangler.toml`: `keep_vars = true`; `SUPABASE_URL` set to the owner-supplied Mail
+  project URL `https://womkqxzbiwgfudxbwkau.supabase.co` (public, not a secret); header
+  rewritten around the source-of-truth rule, the three secret names, and how to list secret
+  **names** on the deployed Worker.
+- `package.json`: `npm run worker:secrets` (sets all three; Wrangler prompts for each value) and
+  `npm run worker:secrets:list` (names only).
+- `worker/src/config.ts`: new `configStatus(env, config)` returning booleans only.
+  `GET /api/health` now answers
+  `configured: { supabaseUrl, supabaseServiceKey, accountsInternalToken, resendApiKey }`, so a
+  deploy that wiped something is visible in one curl. Never a key, never a URL.
+- New `tests/worker-config.test.ts` + `npm run test:config` (also part of `npm test`): fails if
+  `keep_vars` is missing, a required var is blank, `SUPABASE_URL` is a placeholder, a secret
+  name is declared in the file, or a secret-shaped value (`sb_secret_`, `re_`, `eyJ...`,
+  `service_role`) is committed.
+- Docs: `docs/SETUP.md` (where each value lives + survives-a-deploy table, secrets via dashboard
+  type **Secret** or CLI, `/api/health` check, updated checklist), `README.md`,
+  `docs/MAIL.md` (health row), `AGENTS.md` (rules + known traps), `PLAN.md`.
+
+**Verified in this sandbox**
+- `npm run lint` — pass. `npm run test:config` — 8 pass. `npm run test:auth` — 5 pass.
+  `npm run test:worker` — **56 pass** (was 55; new `configured` booleans test, plus a check
+  that health never echoes a URL).
+- `npx wrangler deploy --dry-run --config worker/wrangler.toml` — bundles clean and lists all
+  nine vars, including the real `SUPABASE_URL`.
+- Real `wrangler dev` (workerd, port 8787): `GET /api/health` returned
+  `configured: {all four true}` with a temporary `worker/.dev.vars`; the file was deleted
+  afterwards.
+- `npm run test:ui` — not run (needs the seeded mailbox and a real Accounts session, as before).
+
+**Human steps still needed**
+1. Dashboard → Workers & Pages → `gothwad-mail-api` → Settings → Variables and Secrets →
+   **Production** → add the three secrets as type **Secret**: `SUPABASE_SERVICE_ROLE_KEY`
+   (Mail project's `sb_secret_...`), `RESEND_API_KEY` (`re_...`), `ACCOUNTS_INTERNAL_TOKEN`
+   (same value as Accounts' `MAIL_INTERNAL_TOKEN`). Values stay out of chat and out of git.
+2. Deploy the Worker (`npm run worker:deploy`); `npm run worker:secrets:list` must list those
+   three names.
+3. `curl -s https://mail.gothwadtech.com/api/health` → `configured` has four `true` values.
+4. Confirm `https://womkqxzbiwgfudxbwkau.supabase.co` is the **Mail** project and that
+   `supabase/mail.sql` was run there.
+
+---
+
 ## 2026-10-11 — Split the two Accounts URLs: server-side vs browser-facing
 
 **Goal:** Mail's server-to-server call to `https://accounts.gothwadtech.com/api/auth/me`

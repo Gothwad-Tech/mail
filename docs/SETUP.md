@@ -93,29 +93,74 @@ npm install
 npx wrangler login            # opens a browser; do this yourself
 ```
 
-Set these Mail Worker secrets (Wrangler prompts for each value in your terminal):
+### Where each value lives (read this before touching the dashboard)
+
+`worker/wrangler.toml` is the **source of truth**. `SUPABASE_URL` and every other public var
+is already filled in there, so a deploy can never bring back a placeholder:
+
+| Value | Lives in | Survives a deploy? |
+| --- | --- | --- |
+| `APP_DOMAIN`, `AUTH_HUB_URL`, `AUTH_SIGNIN_URL`, `MAIL_URL`, `SUPABASE_URL`, `DAILY_SEND_LIMIT`, `MAX_INBOUND_BYTES`, `ALLOWED_ORIGINS`, `ENVIRONMENT` | `worker/wrangler.toml` `[vars]` | Yes — the file is re-applied |
+| `ACCOUNTS_INTERNAL_TOKEN`, `SUPABASE_SERVICE_ROLE_KEY`, `RESEND_API_KEY` | Dashboard **Secrets** (type *Secret*) or `wrangler secret put` | Yes — deploys never delete secrets |
+| Anything typed in the dashboard as plain **Text** | Dashboard **Variables** | **No** — overwritten or deleted by the next deploy |
+
+`keep_vars = true` in `wrangler.toml` keeps dashboard-only variables that are **not** named in
+the file. A name that *is* in the file always takes the file's value. So: never add a secret to
+the file, and never rely on a dashboard Text variable for something the Worker needs — put it in
+the file (public) or in Secrets (private).
+
+### Set the three secrets
+
+Either way works; names must match exactly (case-sensitive). Use the exact Mail project's
+service-role key, not the Accounts project's.
+
+Dashboard: **Workers & Pages → `gothwad-mail-api` → Settings → Variables and Secrets →
+Production → Add**, one row each, type **Secret** (click *Encrypt*):
+
+| Name | Value |
+| --- | --- |
+| `SUPABASE_SERVICE_ROLE_KEY` | Mail project's `sb_secret_...` (or legacy `eyJ...` service_role) |
+| `RESEND_API_KEY` | `re_...` (send permission only) |
+| `ACCOUNTS_INTERNAL_TOKEN` | same value as Accounts' `MAIL_INTERNAL_TOKEN` |
+
+Or from a terminal (Wrangler prompts for each value, so it never lands in shell history):
 
 ```bash
+npm run worker:secrets        # sets all three, one after another
+# or one at a time:
 npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY --config worker/wrangler.toml
 npx wrangler secret put RESEND_API_KEY --config worker/wrangler.toml
 npx wrangler secret put ACCOUNTS_INTERNAL_TOKEN --config worker/wrangler.toml
+```
+
+Check which secret **names** the deployed Worker has (names only — never values):
+
+```bash
+npm run worker:secrets:list
 ```
 
 In the separate Accounts deployment, set `MAIL_INTERNAL_TOKEN` to the **same secret
 value** as Mail's `ACCOUNTS_INTERNAL_TOKEN`. Set it through the Accounts team's approved
 secret mechanism; never put it in either repo or paste it into chat.
 
-Edit `worker/wrangler.toml`:
-- Set `SUPABASE_URL` to your real project URL (replace `YOUR_PROJECT_REF`). The Worker
-  refuses to call Supabase while the placeholder is still there.
+Edit `worker/wrangler.toml` only if one of these is wrong for you:
+- `SUPABASE_URL` — already the real Mail project URL
+  (`https://womkqxzbiwgfudxbwkau.supabase.co`). Change it only if you move to another Supabase
+  project; never leave a `YOUR_PROJECT_REF` placeholder (the Worker refuses to call Supabase
+  while it is there).
 - Check `APP_DOMAIN`, `AUTH_HUB_URL`, `AUTH_SIGNIN_URL` and `MAIL_URL`.
 - `AUTH_HUB_URL` must be the Accounts host that answers `/api/*` (the Custom Domain,
   `https://api.gothwadtech.com`). `AUTH_SIGNIN_URL` is the host users sign in on
   (`https://accounts.gothwadtech.com`).
 
-**Also set the same two vars on the deployed Worker.** Dashboard variables win over
-`wrangler.toml` when a Worker has been deployed before, so a stale dashboard value silently
-overrides the file:
+`tests/worker-config.test.ts` (`npm run test:config`) fails the build if a required var is
+missing or blank, if `SUPABASE_URL` goes back to a placeholder, if `keep_vars = true` is
+removed, or if a secret-shaped value is committed into the file.
+
+**Dashboard text variables.** Variables set in the dashboard as plain *Text* are replaced or
+deleted by the next deploy; `keep_vars = true` only protects the ones not named in the file.
+Set `AUTH_HUB_URL` and `AUTH_SIGNIN_URL` in `wrangler.toml` (they are already there) and treat
+the dashboard as a copy, not the source:
 
 1. Cloudflare dashboard → **Workers & Pages → `gothwad-mail-api` → Settings → Variables and
    Secrets**.
@@ -123,7 +168,7 @@ overrides the file:
    secrets):
    - `AUTH_HUB_URL` = `https://api.gothwadtech.com`
    - `AUTH_SIGNIN_URL` = `https://accounts.gothwadtech.com`
-3. Save, then redeploy so the two sources agree.
+3. Save, then redeploy so the two sources agree. If they ever disagree, the deploy wins.
 
 The Mail Worker expects `GET {AUTH_HUB_URL}/api/internal/usernames/:username`, authenticated
 with `Authorization: Bearer <ACCOUNTS_INTERNAL_TOKEN>`. It expects `200 {"exists": true}` or
@@ -140,6 +185,21 @@ npm run test:worker
 npx wrangler deploy --dry-run --config worker/wrangler.toml
 npm run worker:deploy
 ```
+
+Then confirm what the deployed Worker can actually see. `/api/health` returns booleans only —
+it never prints a key or a URL:
+
+```bash
+curl -s https://mail.gothwadtech.com/api/health
+# {"ok":true,"service":"gothwad-mail-api","environment":"production",
+#  "configured":{"supabaseUrl":true,"supabaseServiceKey":true,
+#                "accountsInternalToken":true,"resendApiKey":true}}
+```
+
+Any `false` names the missing piece: `supabaseUrl` → fix `SUPABASE_URL` in `wrangler.toml`;
+`supabaseServiceKey` / `accountsInternalToken` / `resendApiKey` → that secret is not set on the
+deployed Worker (dashboard → Settings → Variables and Secrets → Production, type **Secret**).
+Re-check this after every deploy.
 
 Routes: add the production route for the API so that `mail.gothwadtech.com/api/*` goes to
 this Worker. You can add it in the dashboard (**Workers & Pages → gothwad-mail-api →
@@ -162,7 +222,7 @@ domain. The Worker route for `/api/*` must win over Pages on that host. After de
 check it:
 
 ```bash
-curl -i https://mail.gothwadtech.com/api/health    # should return JSON from the Worker
+curl -i https://mail.gothwadtech.com/api/health    # JSON from the Worker, configured: all true
 curl -i https://mail.gothwadtech.com/api/session   # should return 401 with signinUrl
 ```
 
@@ -296,12 +356,19 @@ itself and says so; the other tests still run.
 - [ ] Separate Mail Supabase project created; `supabase/mail.sql` run there
 - [ ] Accounts `ecosystem_apps` SQL reviewed and run by the Accounts owner (optional for cookie SSO)
 - [ ] `ACCOUNTS_INTERNAL_TOKEN` (Mail) and `MAIL_INTERNAL_TOKEN` (Accounts) are the same secret
-- [ ] Mail service key and Resend key set with `wrangler secret put` (not in files)
+- [ ] All three secrets exist on the Worker as type **Secret** (dashboard or `wrangler secret
+      put`): `SUPABASE_SERVICE_ROLE_KEY`, `RESEND_API_KEY`, `ACCOUNTS_INTERNAL_TOKEN`.
+      `npm run worker:secrets:list` lists the three names; no secret is in a file
 - [ ] `SUPABASE_URL` in `wrangler.toml` is the real Mail project URL
+      (`https://womkqxzbiwgfudxbwkau.supabase.co`) — never a `YOUR_PROJECT_REF` placeholder
+- [ ] `keep_vars = true` is still in `wrangler.toml`; `npm run test:config` passes
 - [ ] `AUTH_HUB_URL` = Accounts Custom Domain (`https://api.gothwadtech.com`) and
       `AUTH_SIGNIN_URL` = sign-in host, set in `wrangler.toml` **and** in the deployed
       Worker's production dashboard variables
-- [ ] Worker deployed; `/api/health` answers from the Worker
+- [ ] Nothing the Worker needs is set only as a plain-Text dashboard variable (a deploy
+      replaces those) — it is either in `wrangler.toml` or a Secret
+- [ ] Worker deployed; `/api/health` answers from the Worker and `configured` shows four
+      `true` values
 - [ ] Route `mail.gothwadtech.com/api/*` points at the Worker
 - [ ] Web app hosted on `mail.gothwadtech.com`
 - [ ] Accounts endpoint is documented and the human curl check returns the expected 200

@@ -37,16 +37,30 @@ local work you can set `DEV_AUTH_USERNAME` in `worker/.dev.vars` (development on
 | `npm run lint` | Typecheck the web app and the Worker |
 | `npm run test:worker` | Worker tests (no network) |
 | `npm run test:auth` | Sign-in redirect/return URL tests (no network) |
+| `npm run test:config` | Checks `worker/wrangler.toml` is complete and secret-free |
 | `npm run test:ui` | jsdom smoke test of the real app (needs the Worker running) |
 | `npm run worker:dev` | Worker locally (`wrangler dev`) |
 | `npm run worker:deploy` | Deploy the Worker |
+| `npm run worker:secrets` | Set the three Worker secrets (Wrangler prompts for values) |
+| `npm run worker:secrets:list` | List the deployed Worker's secret **names** (never values) |
 
 ## Configuration
 
 Public settings are in `worker/wrangler.toml` (`APP_DOMAIN`, `AUTH_HUB_URL`,
-`AUTH_SIGNIN_URL`, `MAIL_URL`, `SUPABASE_URL`, `DAILY_SEND_LIMIT`, `MAX_INBOUND_BYTES`).
-Secrets are `ACCOUNTS_INTERNAL_TOKEN`, `SUPABASE_SERVICE_ROLE_KEY` and `RESEND_API_KEY`; set
-them with `wrangler secret put`.
+`AUTH_SIGNIN_URL`, `MAIL_URL`, `SUPABASE_URL`, `DAILY_SEND_LIMIT`, `MAX_INBOUND_BYTES`) and are
+already filled in — the file is the source of truth and is re-applied on every deploy
+(`keep_vars = true` keeps any dashboard-only var too). Secrets are `ACCOUNTS_INTERNAL_TOKEN`,
+`SUPABASE_SERVICE_ROLE_KEY` and `RESEND_API_KEY`; set them with `npm run worker:secrets` or in
+the dashboard as type **Secret**, never in a file. Deploys never delete secrets, but they do
+replace/remove plain-text dashboard variables.
+
+After a deploy, `GET /api/health` shows which settings the Worker can see, as booleans only:
+
+```json
+{"ok":true,"service":"gothwad-mail-api","environment":"production",
+ "configured":{"supabaseUrl":true,"supabaseServiceKey":true,
+               "accountsInternalToken":true,"resendApiKey":true}}
+```
 
 `AUTH_HUB_URL` is the base for every server-side Accounts call and must reach the Accounts
 Worker (`https://api.gothwadtech.com`, its Custom Domain). `AUTH_SIGNIN_URL` is used only for

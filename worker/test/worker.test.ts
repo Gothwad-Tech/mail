@@ -104,6 +104,33 @@ test('health is public and does not need Supabase', async () => {
   assert.equal(seen.length, 0, 'health must not call upstreams');
 });
 
+test('health says which config is present, as booleans and never values', async () => {
+  const full = await (await worker.fetch(req('/api/health'), baseEnv)).json();
+  assert.deepEqual(full.configured, {
+    supabaseUrl: true,
+    supabaseServiceKey: true,
+    accountsInternalToken: true,
+    resendApiKey: true,
+  });
+
+  // What a wiped deploy looks like: the file's placeholder URL and no secrets.
+  const stripped = await (
+    await worker.fetch(req('/api/health'), {
+      ENVIRONMENT: 'production',
+      SUPABASE_URL: 'https://YOUR_PROJECT_REF.supabase.co',
+    })
+  ).json();
+  assert.deepEqual(stripped.configured, {
+    supabaseUrl: false,
+    supabaseServiceKey: false,
+    accountsInternalToken: false,
+    resendApiKey: false,
+  });
+  const text = JSON.stringify(stripped);
+  assert.equal(text.includes('YOUR_PROJECT_REF'), false, 'health must not echo SUPABASE_URL');
+  assert.equal(text.includes('supabase.co'), false, 'health must not echo any URL');
+});
+
 test('unauthenticated list returns 401 with the Accounts signin base URL', async () => {
   stub = (s) => accountsStub(s) ?? new Response('x', { status: 599 });
   const res = await worker.fetch(req('/api/mail/messages'), baseEnv);

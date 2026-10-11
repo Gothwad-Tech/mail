@@ -13,6 +13,7 @@
 | Supabase schema | Done (`supabase/mail.sql`) | Run only in the separate Mail Supabase project |
 | Frontend (API-backed) | Done | Visual check still needed |
 | Auth gate | Implemented with return-loop guard | Signed-out goes to `/signin?choose=1&next=`; a returned-but-unverified session shows a diagnostic instead of looping |
+| Worker config / secrets | Done, guarded | `wrangler.toml` holds every public var (real `SUPABASE_URL`, not a placeholder) with `keep_vars = true`; the three secrets live only in the dashboard as type **Secret**; `npm run test:config` fails on blanks, placeholders or secret-shaped values; `/api/health` `configured` shows booleans |
 | Docs | Done | README, AGENTS, TASK, PLAN, docs/ |
 
 ## Decisions made with the owner
