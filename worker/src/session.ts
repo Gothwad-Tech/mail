@@ -10,6 +10,11 @@
 //  2. Bearer path (future native/iframe clients): GET
 //     {AUTH_HUB_URL}/api/oauth/userinfo with the access token.
 //
+// AUTH_HUB_URL must be a host that reaches the Accounts Worker for a
+// server-to-server call (Accounts' Custom Domain, e.g. api.gothwadtech.com).
+// AUTH_SIGNIN_URL is used only for the browser-facing sign-in link; see
+// signinBaseUrl() below and the note in config.ts.
+//
 // Email is DERIVED here as username@APP_DOMAIN (Accounts stores username only).
 //
 // Status rule (see docs/MAIL.md, "If Accounts keeps showing the chooser"):
@@ -121,8 +126,7 @@ async function resolveCookie(request: Request, cookie: string, config: Config): 
   // A 200 that is not Mail's JSON (e.g. the HTML a misrouted /api/* serves) or
   // that has no authenticated flag is a broken handoff, not a signed-out user.
   if (!body || typeof body.authenticated !== 'boolean') {
-    warnUpstreamFailure(ACCOUNTS_UNEXPECTED_RESPONSE, res);
-    throw new HttpError(503, ACCOUNTS_UNEXPECTED_RESPONSE, ACCOUNTS_UNEXPECTED_MESSAGE);
+    throw unexpectedResponseError(res);
   }
   if (!body.authenticated) return null;
 
@@ -153,8 +157,7 @@ async function resolveBearer(authHeader: string, config: Config): Promise<Sessio
     name?: string;
   } | null;
   if (!body || typeof body !== 'object') {
-    warnUpstreamFailure(ACCOUNTS_UNEXPECTED_RESPONSE, res);
-    throw new HttpError(503, ACCOUNTS_UNEXPECTED_RESPONSE, ACCOUNTS_UNEXPECTED_MESSAGE);
+    throw unexpectedResponseError(res);
   }
   const username = normalizeUsername(body.preferred_username);
   if (!username) {
@@ -180,13 +183,26 @@ function assertAccountsUsable(res: Response): void {
   // redirecting. Following it would also hand the user's cookies to the host
   // the redirect points at.
   if (res.status >= 300 && res.status < 400) {
-    warnUpstreamFailure(ACCOUNTS_UNEXPECTED_RESPONSE, res);
-    throw new HttpError(503, ACCOUNTS_UNEXPECTED_RESPONSE, ACCOUNTS_UNEXPECTED_MESSAGE);
+    throw unexpectedResponseError(res);
   }
   if (!res.ok) {
     warnUpstreamFailure(AUTH_UNAVAILABLE, res);
     throw new HttpError(503, AUTH_UNAVAILABLE, AUTH_UNAVAILABLE_MESSAGE);
   }
+}
+
+/**
+ * The 503 `accounts_unexpected_response`, with what Accounts actually answered.
+ * Status and content-type only: enough for the browser's DevTools to show
+ * "Accounts answered 200 text/html" without opening the Worker log. The
+ * upstream body and its Set-Cookie/token values never leave the Worker.
+ */
+function unexpectedResponseError(res: Response): HttpError {
+  warnUpstreamFailure(ACCOUNTS_UNEXPECTED_RESPONSE, res);
+  return new HttpError(503, ACCOUNTS_UNEXPECTED_RESPONSE, ACCOUNTS_UNEXPECTED_MESSAGE, {
+    upstreamStatus: res.status,
+    upstreamContentType: res.headers.get('content-type') || null,
+  });
 }
 
 /**
@@ -215,7 +231,14 @@ async function upstream(url: string, headers: Record<string, string>): Promise<R
   }
 }
 
-/** Where to send an unauthenticated browser. The browser appends its own ?next=. */
+/**
+ * Where to send an unauthenticated browser. The browser appends its own ?next=.
+ *
+ * This is a BROWSER link, not a server-side call, so it uses AUTH_SIGNIN_URL
+ * (the Accounts host people sign in on). AUTH_HUB_URL is the server-to-server
+ * host; sending users there would work only by accident, and on a Custom
+ * Domain such as api.gothwadtech.com it would not be the sign-in page.
+ */
 export function signinBaseUrl(config: Config): string {
-  return `${config.authHubUrl}/signin?choose=1`;
+  return `${config.authSigninUrl}/signin?choose=1`;
 }

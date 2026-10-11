@@ -22,7 +22,16 @@ compatibility_date = "2025-09-01"
 
 [vars]
 APP_DOMAIN = "gothwadtech.com"
-AUTH_HUB_URL = "https://accounts.gothwadtech.com"
+# AUTH_HUB_URL = base for every SERVER-side Accounts call (/api/auth/me,
+# /api/oauth/userinfo, /api/internal/usernames/:username). It must be a host
+# that reaches the Accounts Worker, so it is Accounts' Custom Domain. Cloudflare
+# does not run a same-zone Worker behind a Pages host for a server-to-server
+# call: accounts.gothwadtech.com answers HTML there and Mail reports 503
+# accounts_unexpected_response.
+AUTH_HUB_URL = "https://api.gothwadtech.com"
+# AUTH_SIGNIN_URL = browser-facing Accounts links only (sign-in redirect,
+# accountUrl). Optional; falls back to AUTH_HUB_URL when unset.
+AUTH_SIGNIN_URL = "https://accounts.gothwadtech.com"
 MAIL_URL = "https://mail.gothwadtech.com"
 SUPABASE_URL = "https://YOUR_PROJECT_REF.supabase.co"
 ENVIRONMENT = "production"

@@ -12,12 +12,21 @@ Replace placeholders like `YOUR_PROJECT_REF`, `YOUR_DOMAIN` and `re_...` with yo
 | Name | Example | Where it lives |
 | --- | --- | --- |
 | `APP_DOMAIN` | `gothwadtech.com` | `wrangler.toml` `[vars]` (public) |
-| `AUTH_HUB_URL` | `https://accounts.gothwadtech.com` | `wrangler.toml` `[vars]` (public) |
+| `AUTH_HUB_URL` | `https://api.gothwadtech.com` | `wrangler.toml` `[vars]` (public) |
+| `AUTH_SIGNIN_URL` | `https://accounts.gothwadtech.com` | `wrangler.toml` `[vars]` (public) |
 | `MAIL_URL` | `https://mail.gothwadtech.com` | `wrangler.toml` `[vars]` (public) |
 | `SUPABASE_URL` | `https://YOUR_PROJECT_REF.supabase.co` | `wrangler.toml` `[vars]` (public) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Mail project's `sb_secret_...` (or legacy `eyJ...`) | **secret** |
 | `RESEND_API_KEY` | `re_...` | **secret** |
 | `ACCOUNTS_INTERNAL_TOKEN` | Same value as Accounts' `MAIL_INTERNAL_TOKEN` | **secret** |
+
+`AUTH_HUB_URL` is the base for **every server-side Accounts call** (`/api/auth/me`,
+`/api/oauth/userinfo`, `/api/internal/usernames/:username`), so it must be a host that reaches
+the Accounts Worker: its **Custom Domain** `https://api.gothwadtech.com`. Cloudflare does not
+invoke a same-zone Worker behind a Route for a server-to-server call, so
+`https://accounts.gothwadtech.com` answers the Pages SPA HTML there and Mail reports
+503 `accounts_unexpected_response`. `AUTH_SIGNIN_URL` is used only for browser-facing links
+(the sign-in redirect and `accountUrl`); it is optional and falls back to `AUTH_HUB_URL`.
 
 The domain and URLs are not secrets. Keys and the shared internal token are. Set them with
 `wrangler secret put` or in the Cloudflare dashboard, never in `wrangler.toml` or git. Do
@@ -99,7 +108,22 @@ secret mechanism; never put it in either repo or paste it into chat.
 Edit `worker/wrangler.toml`:
 - Set `SUPABASE_URL` to your real project URL (replace `YOUR_PROJECT_REF`). The Worker
   refuses to call Supabase while the placeholder is still there.
-- Check `APP_DOMAIN`, `AUTH_HUB_URL` and `MAIL_URL`.
+- Check `APP_DOMAIN`, `AUTH_HUB_URL`, `AUTH_SIGNIN_URL` and `MAIL_URL`.
+- `AUTH_HUB_URL` must be the Accounts host that answers `/api/*` (the Custom Domain,
+  `https://api.gothwadtech.com`). `AUTH_SIGNIN_URL` is the host users sign in on
+  (`https://accounts.gothwadtech.com`).
+
+**Also set the same two vars on the deployed Worker.** Dashboard variables win over
+`wrangler.toml` when a Worker has been deployed before, so a stale dashboard value silently
+overrides the file:
+
+1. Cloudflare dashboard → **Workers & Pages → `gothwad-mail-api` → Settings → Variables and
+   Secrets**.
+2. Select the **Production** environment and set both as plain **Text** (they are not
+   secrets):
+   - `AUTH_HUB_URL` = `https://api.gothwadtech.com`
+   - `AUTH_SIGNIN_URL` = `https://accounts.gothwadtech.com`
+3. Save, then redeploy so the two sources agree.
 
 The Mail Worker expects `GET {AUTH_HUB_URL}/api/internal/usernames/:username`, authenticated
 with `Authorization: Bearer <ACCOUNTS_INTERNAL_TOKEN>`. It expects `200 {"exists": true}` or
@@ -153,8 +177,10 @@ If `/api/health` returns HTML, the route is not matching. Fix the route order be
    its JSON `error` code in the browser Network panel. A repeated **401 `unauthenticated`**
    means Mail did not get a valid shared Accounts session. A **503** means Accounts answered
    but Mail could not read the session: `accounts_user_invalid` (profile row has no username),
-   `accounts_unexpected_response` (`/api/*` is not reaching the Accounts Worker, or Accounts
-   redirected), or `auth_unavailable` (Accounts down / wrong `AUTH_HUB_URL`).
+   `accounts_unexpected_response` (`AUTH_HUB_URL` is not reaching the Accounts Worker, or
+   Accounts redirected — the body's `upstreamStatus` / `upstreamContentType` say which:
+   `200 text/html` means the request hit the Pages SPA instead of the Worker), or
+   `auth_unavailable` (Accounts down / wrong `AUTH_HUB_URL`).
 4. In browser storage, inspect cookie **names and attributes only**. `gothwad_at` and
    `gothwad_rt` should use `Domain=.APP_DOMAIN` (for example `.gothwadtech.com`), Path `/`,
    and Secure. Never copy cookie values into chat, logs, or tickets.
@@ -180,8 +206,9 @@ The Mail Worker expects
 the two secret values do not match or the Accounts secret is not set.
 
 Run this in your own shell after setting `AUTH_HUB_URL` to the value from
-`worker/wrangler.toml` and `USERNAME` to a real, lowercase Accounts username. The prompt
-reads the secret without echoing or putting it in shell history:
+`worker/wrangler.toml` (the Accounts Custom Domain, `https://api.gothwadtech.com` — not the
+Pages host) and `USERNAME` to a real, lowercase Accounts username. The prompt reads the
+secret without echoing or putting it in shell history:
 
 ```bash
 read -rsp 'MAIL_INTERNAL_TOKEN: ' MAIL_INTERNAL_TOKEN; printf '\n'
@@ -271,6 +298,9 @@ itself and says so; the other tests still run.
 - [ ] `ACCOUNTS_INTERNAL_TOKEN` (Mail) and `MAIL_INTERNAL_TOKEN` (Accounts) are the same secret
 - [ ] Mail service key and Resend key set with `wrangler secret put` (not in files)
 - [ ] `SUPABASE_URL` in `wrangler.toml` is the real Mail project URL
+- [ ] `AUTH_HUB_URL` = Accounts Custom Domain (`https://api.gothwadtech.com`) and
+      `AUTH_SIGNIN_URL` = sign-in host, set in `wrangler.toml` **and** in the deployed
+      Worker's production dashboard variables
 - [ ] Worker deployed; `/api/health` answers from the Worker
 - [ ] Route `mail.gothwadtech.com/api/*` points at the Worker
 - [ ] Web app hosted on `mail.gothwadtech.com`

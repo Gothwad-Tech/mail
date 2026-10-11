@@ -22,6 +22,24 @@ Internet mail ──► Email Routing (catch-all) ──► Mail Worker email()
   never makes its own login. Mail has its own Supabase project and does not read the Accounts
   database or `public.profiles`.
 
+### The two Accounts URLs
+
+| Var | Used for | Value |
+| --- | --- | --- |
+| `AUTH_HUB_URL` | **Every server-side fetch** Mail makes to Accounts: `/api/auth/me`, `/api/oauth/userinfo`, `/api/internal/usernames/:username` (inbound). | `https://api.gothwadtech.com` — Accounts' Custom Domain. |
+| `AUTH_SIGNIN_URL` | **Browser-facing links only**: `signinUrl` in a 401, and `accountUrl` in `/api/session`. | `https://accounts.gothwadtech.com` — the host people sign in on. |
+
+Why two: Cloudflare does **not** invoke a same-zone Worker that is attached by a Route for a
+server-to-server call. When Mail called `https://accounts.gothwadtech.com/api/auth/me`, the
+request was served by the Pages SPA and answered `200 text/html`, so Mail had no session to
+read and answered 503 `accounts_unexpected_response`. Accounts now also answers on the Custom
+Domain `api.gothwadtech.com`, which does reach the Worker, so that is `AUTH_HUB_URL`. Users
+still sign in on `accounts.gothwadtech.com`, so that stays `AUTH_SIGNIN_URL`.
+
+`AUTH_SIGNIN_URL` is optional: when it is unset it falls back to `AUTH_HUB_URL`, which keeps a
+single-host deployment working. Both vars are public config (`wrangler.toml` `[vars]`), not
+secrets, and must match on the deployed Worker — see `docs/SETUP.md`.
+
 ## Identity and the email address
 
 1. The browser calls `GET /api/session`. The Worker forwards the browser's cookies to
@@ -29,7 +47,7 @@ Internet mail ──► Email Routing (catch-all) ──► Mail Worker email()
 2. If Accounts says `authenticated: true`, the Worker takes `user.username`. The address is
    **derived**: `username@APP_DOMAIN`. Accounts does not store the email.
 3. If the user is not signed in, the Worker returns **401** with
-   `signinUrl = {AUTH_HUB_URL}/signin?choose=1`. The web app sends the browser there with
+   `signinUrl = {AUTH_SIGNIN_URL}/signin?choose=1`. The web app sends the browser there with
    `&next=` set to the Mail page. A one-time `__mail_auth_return=1` marker is included in
    that return URL so Mail can tell a failed SSO handoff from the initial sign-in.
 4. Accounts can rotate the refresh token on `/auth/me`. It then sends new `gothwad_*`
@@ -62,6 +80,22 @@ the upstream content-type, for example
 `accounts_check_failed code=accounts_unexpected_response status=200 content-type=text/html`.
 Cookie values, tokens and response bodies are never logged.
 
+The 503 `accounts_unexpected_response` body carries those same two values as `upstreamStatus`
+and `upstreamContentType`, so the browser's DevTools shows "Accounts answered 200 text/html"
+without opening the Worker log:
+
+```json
+{
+  "error": "accounts_unexpected_response",
+  "message": "Accounts did not answer with a session Mail can read. …",
+  "upstreamStatus": 200,
+  "upstreamContentType": "text/html; charset=utf-8"
+}
+```
+
+Only the status and the content-type are included — never the upstream body, and never a
+cookie or token value.
+
 The web app only redirects to Accounts for a **401 with a `signinUrl`**. Every 503 shows the
 error screen with a **Retry** button. For `accounts_user_invalid` and
 `accounts_unexpected_response` the message says the Gothwad Account is signed in but Mail
@@ -87,20 +121,26 @@ may contain tokens):
 - **503 `accounts_user_invalid`** — the user IS signed in, but the Accounts profile row has no
   username Mail can use. Accounts-side fix (falls back to the JWT metadata); if it still
   fails, check the Accounts `profiles` row for that user.
-- **503 `accounts_unexpected_response`** — `/api/*` on `accounts.gothwadtech.com` is not
-  reaching the Accounts Worker, or Accounts is redirecting. Check the Cloudflare Worker route
-  `accounts.gothwadtech.com/api/*`.
+- **503 `accounts_unexpected_response`** — `/api/*` on Mail's `AUTH_HUB_URL` is not reaching
+  the Accounts Worker, or Accounts is redirecting. Read `upstreamStatus` and
+  `upstreamContentType` in the response body: `200 text/html` means the request hit the Pages
+  SPA instead of the Worker (the classic same-zone Route problem), so `AUTH_HUB_URL` must be
+  the Accounts Custom Domain (`https://api.gothwadtech.com`), not the Pages host. A `3xx`
+  means Accounts is redirecting.
 - **503 `auth_unavailable`** — the Accounts Worker is down or Mail's `AUTH_HUB_URL` points at
   the wrong deployment.
 
-Confirm that Accounts' `AUTH_HUB_URL` deployment sets the session cookies for the parent
-domain, and that Mail's `AUTH_HUB_URL` points to that same deployment.
+Confirm that Accounts' deployment sets the session cookies for the parent domain, and that
+Mail's `AUTH_HUB_URL` points at the Accounts host that answers `/api/*` (the Custom Domain)
+while `AUTH_SIGNIN_URL` points at the host users sign in on.
 
 ### Verification after both sides are deployed
 
 1. In the same browser profile (do not share the body — it contains tokens), open
-   `https://accounts.gothwadtech.com/api/auth/me` and check **only** the status code, that it
-   is JSON, and the `authenticated` / `user.username` fields.
+   `https://api.gothwadtech.com/api/auth/me` — Mail's `AUTH_HUB_URL` host, the one the Worker
+   actually calls — and check **only** the status code, that it is JSON, and the
+   `authenticated` / `user.username` fields. If it answers HTML, that host is not reaching the
+   Accounts Worker and `AUTH_HUB_URL` is still wrong.
 2. Reload `https://mail.gothwadtech.com`. Expected: the inbox loads (`/api/session` = 200).
    If it does not, the `/api/session` status and JSON `error` code now say which branch
    failed — use the list above.

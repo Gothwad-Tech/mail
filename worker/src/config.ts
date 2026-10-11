@@ -5,6 +5,18 @@
 // company moves from gothwadtech.com to gothwad.in. We only keep fallback
 // defaults here so a missing var does not break the Worker silently.
 //
+// Two Accounts URLs, because Accounts answers differently per host:
+//   AUTH_HUB_URL     base for every SERVER-side fetch (/api/auth/me,
+//                    /api/oauth/userinfo, /api/internal/usernames/:username).
+//                    This must be a host that reaches the Accounts Worker,
+//                    e.g. its Custom Domain api.gothwadtech.com.
+//   AUTH_SIGNIN_URL  base for browser-facing links only (sign-in redirect and
+//                    accountUrl). Cloudflare does not run a same-zone Worker
+//                    behind a Pages host for a server-to-server call, so the
+//                    Pages host answers HTML and is unusable as AUTH_HUB_URL.
+// AUTH_SIGNIN_URL is optional and falls back to AUTH_HUB_URL, so a deployment
+// that sets only AUTH_HUB_URL keeps working exactly as before.
+//
 // Secrets (ACCOUNTS_INTERNAL_TOKEN, SUPABASE_SERVICE_ROLE_KEY, RESEND_API_KEY) are
 // set with `wrangler secret put` or in the dashboard. Never put them in wrangler.toml.
 // =============================================================================
@@ -13,6 +25,7 @@ export interface Env {
   // Public config (wrangler.toml [vars])
   APP_DOMAIN?: string;
   AUTH_HUB_URL?: string;
+  AUTH_SIGNIN_URL?: string;
   MAIL_URL?: string;
   SUPABASE_URL?: string;
   ENVIRONMENT?: string; // "production" (default when unset) or "development"
@@ -32,6 +45,7 @@ export interface Env {
 export interface Config {
   appDomain: string;
   authHubUrl: string;
+  authSigninUrl: string;
   mailUrl: string;
   supabaseUrl: string;
   accountsInternalToken: string | null;
@@ -58,6 +72,7 @@ function toPositiveInt(value: string | undefined, fallback: number): number {
 export function readConfig(env: Env): Config {
   const isProduction = env.ENVIRONMENT !== 'development';
   const mailUrl = stripTrailingSlash((env.MAIL_URL || DEFAULT_MAIL_URL).trim());
+  const authHubUrl = stripTrailingSlash((env.AUTH_HUB_URL || DEFAULT_AUTH_HUB_URL).trim());
 
   const extraOrigins = (env.ALLOWED_ORIGINS || '')
     .split(',')
@@ -66,7 +81,11 @@ export function readConfig(env: Env): Config {
 
   return {
     appDomain: (env.APP_DOMAIN || DEFAULT_APP_DOMAIN).trim().toLowerCase(),
-    authHubUrl: stripTrailingSlash((env.AUTH_HUB_URL || DEFAULT_AUTH_HUB_URL).trim()),
+    authHubUrl,
+    // Falls back to AUTH_HUB_URL so a deployment that only sets AUTH_HUB_URL
+    // keeps its old behaviour (one Accounts host for both roles). An empty or
+    // blank AUTH_SIGNIN_URL also falls back rather than producing a bad URL.
+    authSigninUrl: stripTrailingSlash(env.AUTH_SIGNIN_URL?.trim() || authHubUrl),
     mailUrl,
     supabaseUrl: stripTrailingSlash((env.SUPABASE_URL || '').trim()),
     accountsInternalToken: env.ACCOUNTS_INTERNAL_TOKEN?.trim() || null,

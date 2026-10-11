@@ -55,7 +55,11 @@ export function localPartForDomain(address: string, appDomain: string): string |
 
 const ACCOUNTS_LOOKUP_TIMEOUT_MS = 5000;
 
-/** Ask Accounts, not its database, whether this mailbox name is registered. */
+/**
+ * Ask Accounts, not its database, whether this mailbox name is registered.
+ * Server-to-server call, so it goes to AUTH_HUB_URL like every other Accounts
+ * fetch — never to AUTH_SIGNIN_URL, which is only for browser links.
+ */
 async function accountExists(username: string, config: Config): Promise<boolean> {
   const token = config.accountsInternalToken;
   if (!token) throw new Error('Accounts internal token is not configured');

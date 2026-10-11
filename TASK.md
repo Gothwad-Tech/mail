@@ -2,6 +2,70 @@
 
 Updated every session. Newest first.
 
+## 2026-10-11 — Split the two Accounts URLs: server-side vs browser-facing
+
+**Goal:** Mail's server-to-server call to `https://accounts.gothwadtech.com/api/auth/me`
+cannot work: Cloudflare does not invoke a same-zone Worker that is attached by a Route, so the
+request was served by the Pages SPA and answered `200 text/html`. Mail reported that correctly
+as 503 `accounts_unexpected_response`. Accounts now also answers on the Custom Domain
+`api.gothwadtech.com`, which does reach the Worker.
+
+**Done**
+- `worker/src/config.ts`: new optional `AUTH_SIGNIN_URL`, resolved as `authSigninUrl` with a
+  fallback to the resolved `AUTH_HUB_URL` (a blank value falls back too). `AUTH_HUB_URL` stays
+  the base for **every** server-side fetch: `/api/auth/me`, `/api/oauth/userinfo` and
+  `/api/internal/usernames/:username` (inbound).
+- `AUTH_SIGNIN_URL` is used **only** for browser-facing URLs: `signinBaseUrl()` in
+  `worker/src/session.ts` (the 401 `signinUrl`) and `accountUrl` in `worker/src/index.ts`.
+- `worker/wrangler.toml` `[vars]`: `AUTH_HUB_URL = "https://api.gothwadtech.com"`,
+  `AUTH_SIGNIN_URL = "https://accounts.gothwadtech.com"`. Documented in `.env.example`,
+  `docs/MAIL.md` (new "The two Accounts URLs" section) and `docs/SETUP.md` (values table,
+  deploy step, checklist).
+- The 503 `accounts_unexpected_response` body now carries `upstreamStatus` and
+  `upstreamContentType`, so DevTools shows "Accounts answered 200 text/html" without opening
+  the Worker log. Status and content-type only — no upstream body, no cookie or token value.
+  The `accounts_check_failed ...` log line is unchanged.
+- **Not done on purpose:** the `[[services]]` service-binding option. The owner chose the
+  Custom Domain route, so no `ACCOUNTS` binding was added and `session.ts` / `inbound.ts`
+  still use plain `fetch`. If the binding is wanted later, add it alongside
+  `AUTH_HUB_URL` and keep plain `fetch` as the fallback.
+
+**Verified in this sandbox**
+- `npm run lint` — pass (root + `worker/tsconfig.json`).
+- `npm run test:worker` — **55 pass** (was 48). New: 200 `text/html` → 503 with
+  `upstreamStatus`/`upstreamContentType` (cookie path, bearer path and 302); a check that the
+  body carries no upstream body or cookie value; sign-in links use `AUTH_SIGNIN_URL` while
+  `/api/auth/me`, `/api/oauth/userinfo` and the inbound username lookup use `AUTH_HUB_URL`;
+  blank/missing `AUTH_SIGNIN_URL` falls back.
+- Mutation-checked: reverting `signinBaseUrl` to `authHubUrl` and deleting the
+  `upstreamStatus`/`upstreamContentType` fields fails 6 tests; reverting `accountUrl` fails 1.
+- `npm run test:auth` — 5 pass. `npm run build` — pass.
+- `npx wrangler deploy --dry-run` — bundles cleanly and lists both bindings:
+  `env.AUTH_HUB_URL ("https://api.gothwadtech.com")`,
+  `env.AUTH_SIGNIN_URL ("https://accounts.gothwadtech.com")`.
+- Real `wrangler dev` (workerd, port 8787): `GET /api/session` with no cookie returned
+  `401 {"error":"unauthenticated", "signinUrl":"https://accounts.gothwadtech.com/signin?choose=1"}`
+  — the sign-in host, not the API host. With a cookie it tried the Custom Domain and, having
+  no outbound route from the sandbox, returned 503 `auth_unavailable` with the log line
+  `accounts_check_failed code=auth_unavailable status=none content-type=none`.
+- `npm run test:ui` — **could not run here**: it needs a seeded Mail Supabase mailbox
+  ("Invoice for October") and a real Accounts session. Confirmed environmental, not a
+  regression: the same 4 failures with the same "Timed out waiting for" errors happen on the
+  unmodified baseline (verified with `git stash`). No `worker/.dev.vars` or stub was left
+  behind; nothing extra is committed.
+
+**Human step still needed**
+- Set the same two vars on the **deployed** Worker: dashboard → Workers & Pages →
+  `gothwad-mail-api` → Settings → Variables and Secrets → **Production** →
+  `AUTH_HUB_URL = https://api.gothwadtech.com`,
+  `AUTH_SIGNIN_URL = https://accounts.gothwadtech.com` (plain Text, not secret), then
+  redeploy so the dashboard and `wrangler.toml` agree. A stale dashboard value overrides the
+  file.
+- Then re-check `https://api.gothwadtech.com/api/auth/me` (status + JSON only) and reload
+  `https://mail.gothwadtech.com`.
+
+---
+
 ## 2026-10-11 — Stop calling every Accounts problem "signed out"
 
 **Goal:** Fix "Accounts sent you back to Mail, but Mail could not verify your sign-in".
