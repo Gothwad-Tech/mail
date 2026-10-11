@@ -57,7 +57,8 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
 - Before you say something works, run the checks:
   - `npm run lint` (root and worker typecheck)
   - `npm run build`
-  - `npm run test:worker` (27+ Worker tests, no network)
+  - `npm run test:worker` (Worker tests, no network)
+  - `npm run test:auth` (sign-in return URL tests, no network)
   - `npm run test:ui` (jsdom smoke test; needs `npm run worker:dev` plus a signed-in
     cookie. See `docs/SETUP.md`, "Local checks")
 - `wrangler deploy --dry-run` should bundle cleanly before any deploy.

@@ -142,3 +142,22 @@ test('signed-out browser is sent to Accounts sign-in (with next=) and never sees
   });
   document.body.innerHTML = '<div id="root"></div>';
 });
+
+test('failed Accounts return is explained instead of redirecting to the chooser forever', async () => {
+  activeCookie = 'unrelated=1';
+  window.history.replaceState(window.history.state, '', '/?__mail_auth_return=1');
+  const root = createRoot(document.getElementById('root')!);
+  await act(async () => {
+    root.render(createElement(App));
+  });
+
+  await waitFor(() => text().includes('Accounts sent you back to Mail'), 'SSO handoff error');
+  assert.equal(text().includes('Redirecting you to sign in'), false, 'do not start another chooser round-trip');
+  assert.equal(new URL(window.location.href).searchParams.has('__mail_auth_return'), false, 'one-time marker is cleaned');
+
+  await act(async () => {
+    root.unmount();
+  });
+  document.body.innerHTML = '<div id="root"></div>';
+  window.history.replaceState(window.history.state, '', '/');
+});

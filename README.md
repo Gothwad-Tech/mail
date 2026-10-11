@@ -36,6 +36,7 @@ local work you can set `DEV_AUTH_USERNAME` in `worker/.dev.vars` (development on
 | `npm run build` | Production build into `dist/` |
 | `npm run lint` | Typecheck the web app and the Worker |
 | `npm run test:worker` | Worker tests (no network) |
+| `npm run test:auth` | Sign-in redirect/return URL tests (no network) |
 | `npm run test:ui` | jsdom smoke test of the real app (needs the Worker running) |
 | `npm run worker:dev` | Worker locally (`wrangler dev`) |
 | `npm run worker:deploy` | Deploy the Worker |
