@@ -43,10 +43,16 @@ local work you can set `DEV_AUTH_USERNAME` in `worker/.dev.vars` (development on
 
 ## Configuration
 
-Public settings are in `worker/wrangler.toml` (`APP_DOMAIN`, `AUTH_HUB_URL`, `MAIL_URL`,
-`SUPABASE_URL`, `DAILY_SEND_LIMIT`, `MAX_INBOUND_BYTES`). Secrets are
-`ACCOUNTS_INTERNAL_TOKEN`, `SUPABASE_SERVICE_ROLE_KEY` and `RESEND_API_KEY`; set them with
-`wrangler secret put`.
+Public settings are in `worker/wrangler.toml` (`APP_DOMAIN`, `AUTH_HUB_URL`,
+`AUTH_SIGNIN_URL`, `MAIL_URL`, `SUPABASE_URL`, `DAILY_SEND_LIMIT`, `MAX_INBOUND_BYTES`).
+Secrets are `ACCOUNTS_INTERNAL_TOKEN`, `SUPABASE_SERVICE_ROLE_KEY` and `RESEND_API_KEY`; set
+them with `wrangler secret put`.
+
+`AUTH_HUB_URL` is the base for every server-side Accounts call and must reach the Accounts
+Worker (`https://api.gothwadtech.com`, its Custom Domain). `AUTH_SIGNIN_URL` is used only for
+browser-facing links — the sign-in redirect and `accountUrl` — and falls back to
+`AUTH_HUB_URL` when unset. Set both on the deployed Worker too (dashboard → Settings →
+Variables and Secrets → Production); see `docs/SETUP.md`.
 
 Nothing in the code hardcodes the domain. Fallback defaults may use `gothwadtech.com`.
 

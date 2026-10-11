@@ -157,6 +157,7 @@ test('Accounts 302 -> Mail 503 accounts_unexpected_response (never followed)', a
   assert.equal(res.status, 503);
   assert.equal(body.error, 'accounts_unexpected_response');
   assert.equal(body.signinUrl, undefined, 'a 503 must not carry a sign-in link');
+  assert.equal(body.upstreamStatus, 302);
   const accountsCall = seen.find((s) => s.url.host === 'accounts.test');
   assert.equal(accountsCall?.redirect, 'manual', 'the upstream redirect must not be followed');
 });
@@ -172,6 +173,37 @@ test('Accounts 200 with an HTML body -> Mail 503 accounts_unexpected_response', 
   const { res, body } = await sessionResponse();
   assert.equal(res.status, 503);
   assert.equal(body.error, 'accounts_unexpected_response');
+  // The Pages SPA answering /api/auth/me is the failure this reports, so the
+  // browser must be able to see it in DevTools without the Worker log.
+  assert.equal(body.upstreamStatus, 200);
+  assert.equal(body.upstreamContentType, 'text/html; charset=utf-8');
+});
+
+test('the 503 upstream detail never carries the Accounts body or a cookie', async () => {
+  stub = accountsMeStub(
+    () =>
+      new Response('<html><body>SECRET_BODY</body></html>', {
+        status: 200,
+        headers: {
+          'content-type': 'text/html; charset=utf-8',
+          'set-cookie': 'gothwad_at=SECRET_COOKIE_VALUE; Domain=.gothwadtech.com',
+        },
+      })
+  );
+  const { res, body } = await sessionResponse();
+  assert.equal(res.status, 503);
+  assert.equal(body.error, 'accounts_unexpected_response');
+  assert.equal(body.upstreamStatus, 200);
+  assert.equal(body.upstreamContentType, 'text/html; charset=utf-8');
+  const text = JSON.stringify(body);
+  assert.equal(text.includes('SECRET_BODY'), false, 'the upstream body never leaves the Worker');
+  assert.equal(text.includes('SECRET_COOKIE_VALUE'), false, 'no cookie or token value in the body');
+  assert.deepEqual(Object.keys(body).sort(), [
+    'error',
+    'message',
+    'upstreamContentType',
+    'upstreamStatus',
+  ]);
 });
 
 test('Accounts 200 without an authenticated field -> Mail 503 accounts_unexpected_response', async () => {
@@ -179,6 +211,21 @@ test('Accounts 200 without an authenticated field -> Mail 503 accounts_unexpecte
   const { res, body } = await sessionResponse();
   assert.equal(res.status, 503);
   assert.equal(body.error, 'accounts_unexpected_response');
+  assert.equal(body.upstreamStatus, 200);
+  assert.match(String(body.upstreamContentType), /^application\/json/);
+});
+
+test('bearer path: HTML from userinfo -> 503 accounts_unexpected_response with upstream detail', async () => {
+  stub = (s) =>
+    s.url.pathname === '/api/oauth/userinfo'
+      ? new Response('<html>spa</html>', { status: 200, headers: { 'content-type': 'text/html' } })
+      : new Response('x', { status: 599 });
+  const res = await handleRequest(req('/api/session', { headers: { authorization: 'Bearer sometoken' } }), baseEnv);
+  assert.equal(res.status, 503);
+  const body = (await res.json()) as Record<string, unknown>;
+  assert.equal(body.error, 'accounts_unexpected_response');
+  assert.equal(body.upstreamStatus, 200);
+  assert.equal(body.upstreamContentType, 'text/html');
 });
 
 test('Accounts 200 authenticated with username "Pawan" -> Mail 200 username pawan', async () => {
@@ -261,6 +308,114 @@ test('a network failure logs the code with no upstream status', async () => {
   }
   assert.equal(warns.length, 1);
   assert.match(warns[0], /code=auth_unavailable status=none content-type=none/);
+});
+
+// -----------------------------------------------------------------------------
+// AUTH_HUB_URL vs AUTH_SIGNIN_URL.
+//
+// Cloudflare does not invoke a same-zone Worker behind a Route for a
+// server-to-server call, so the Accounts sign-in host (a Pages SPA) answers
+// HTML to Mail and every session check fails. Server-side calls must go to the
+// Accounts Custom Domain (AUTH_HUB_URL); only browser links use
+// AUTH_SIGNIN_URL.
+// -----------------------------------------------------------------------------
+
+const splitEnv: Env = {
+  ...baseEnv,
+  AUTH_HUB_URL: 'https://api.test',
+  AUTH_SIGNIN_URL: 'https://accounts.test',
+};
+
+/**
+ * Answers only on the server-side host. A call to the sign-in host gets the
+ * HTML a Pages SPA would serve, so a test that reaches it fails loudly.
+ */
+function hubOnlyStub(make: (s: Seen) => Response): Stub {
+  return (s) => {
+    if (s.url.host === 'api.test') return make(s);
+    if (s.url.host === 'accounts.test') {
+      return new Response('<html>spa</html>', { status: 200, headers: { 'content-type': 'text/html' } });
+    }
+    return new Response('x', { status: 599 });
+  };
+}
+
+test('signed-out 401 uses AUTH_SIGNIN_URL while the session check uses AUTH_HUB_URL', async () => {
+  stub = hubOnlyStub((s) =>
+    s.url.pathname === '/api/auth/me' ? Response.json({ authenticated: false }, { status: 401 }) : new Response('x', { status: 599 })
+  );
+  const res = await handleRequest(req('/api/session', { cookie: 'gothwad_at=fresh' }), splitEnv);
+  assert.equal(res.status, 401);
+  const body = (await res.json()) as { error: string; signinUrl: string };
+  assert.equal(body.error, 'unauthenticated');
+  assert.equal(body.signinUrl, 'https://accounts.test/signin?choose=1', 'the browser link is the sign-in host');
+  assert.deepEqual(
+    seen.map((s) => s.url.origin),
+    ['https://api.test'],
+    'the server-side call is the Custom Domain only'
+  );
+});
+
+test('accountUrl uses AUTH_SIGNIN_URL and /api/auth/me still uses AUTH_HUB_URL', async () => {
+  stub = hubOnlyStub((s) => {
+    if (s.url.pathname === '/api/auth/me') {
+      return Response.json({ authenticated: true, user: { username: 'alice', first_name: 'Alice' } });
+    }
+    return new Response('x', { status: 599 });
+  });
+  const res = await handleRequest(req('/api/session', { cookie: 'gothwad_at=good' }), splitEnv);
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { accountUrl: string };
+  assert.equal(body.accountUrl, 'https://accounts.test/me');
+  const me = seen.find((s) => s.url.pathname === '/api/auth/me');
+  assert.equal(me?.url.origin, 'https://api.test', '/api/auth/me goes to AUTH_HUB_URL');
+  assert.equal(seen.some((s) => s.url.host === 'accounts.test'), false, 'no server-side call to the sign-in host');
+});
+
+test('bearer path checks userinfo on AUTH_HUB_URL', async () => {
+  stub = hubOnlyStub((s) =>
+    s.url.pathname === '/api/oauth/userinfo'
+      ? Response.json({ sub: '1', preferred_username: 'alice', name: 'Alice' })
+      : new Response('x', { status: 599 })
+  );
+  const res = await handleRequest(req('/api/session', { headers: { authorization: 'Bearer goodtoken' } }), splitEnv);
+  assert.equal(res.status, 200);
+  const userinfo = seen.find((s) => s.url.pathname === '/api/oauth/userinfo');
+  assert.equal(userinfo?.url.origin, 'https://api.test');
+  assert.equal(seen.some((s) => s.url.host === 'accounts.test'), false);
+});
+
+test('inbound username lookup uses AUTH_HUB_URL, not AUTH_SIGNIN_URL', async () => {
+  stub = (s) => {
+    if (s.url.origin === 'https://api.test' && s.url.pathname === '/api/internal/usernames/pawan') {
+      return Response.json({ exists: true });
+    }
+    if (s.url.host === 'abcdefgh.supabase.co' && s.method === 'POST') return Response.json([{ id: 'in-1' }]);
+    return new Response('x', { status: 599 });
+  };
+  const { msg, rejected } = inboundMessage('pawan@gothwadtech.com');
+  await worker.email(msg, splitEnv);
+  assert.equal(rejected(), null, 'the message is accepted');
+  const lookup = seen.find((s) => s.url.pathname.startsWith('/api/internal/usernames/'));
+  assert.equal(lookup?.url.origin, 'https://api.test');
+  assert.equal(seen.some((s) => s.url.host === 'accounts.test'), false);
+});
+
+test('a missing or blank AUTH_SIGNIN_URL falls back to AUTH_HUB_URL', async () => {
+  for (const signin of [undefined, '', '   ']) {
+    const env: Env = { ...baseEnv, AUTH_HUB_URL: 'https://api.test', AUTH_SIGNIN_URL: signin };
+    stub = (s) =>
+      s.url.host === 'api.test'
+        ? Response.json({ authenticated: false }, { status: 401 })
+        : new Response('x', { status: 599 });
+    const res = await handleRequest(req('/api/session', { cookie: 'gothwad_at=fresh' }), env);
+    assert.equal(res.status, 401);
+    assert.equal(
+      ((await res.json()) as { signinUrl: string }).signinUrl,
+      'https://api.test/signin?choose=1',
+      `AUTH_SIGNIN_URL=${JSON.stringify(signin)} falls back to AUTH_HUB_URL`
+    );
+  }
 });
 
 test('session returns derived email and remaining sends for a cookie session', async () => {

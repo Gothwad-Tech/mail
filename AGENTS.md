@@ -13,10 +13,13 @@ Gothwad Mail is a webmail app for `username@APP_DOMAIN` addresses.
 - **Database**: Supabase in a **separate Gothwad Mail project**. Schema in
   `supabase/mail.sql`. Run by a human in the SQL editor. Never run by an agent. Mail does
   not read Accounts' `public.profiles`; `user_id` stays null.
-- **Identity**: Gothwad Accounts (`AUTH_HUB_URL`). Mail never has its own login. It asks
-  Accounts who is signed in (`/api/auth/me` with the browser's cookies, or
-  `/api/oauth/userinfo` for bearer tokens). Inbound mailbox checks also use an Accounts
-  endpoint; Mail never reads Accounts' database.
+- **Identity**: Gothwad Accounts. Mail never has its own login. It asks Accounts who is
+  signed in (`/api/auth/me` with the browser's cookies, or `/api/oauth/userinfo` for bearer
+  tokens). Inbound mailbox checks also use an Accounts endpoint; Mail never reads Accounts'
+  database. Two URLs, two jobs: `AUTH_HUB_URL` is the base for **every server-side Accounts
+  fetch** and must reach the Accounts Worker (its Custom Domain, `api.gothwadtech.com`);
+  `AUTH_SIGNIN_URL` is for **browser links only** (the 401 `signinUrl` and `accountUrl`) and
+  falls back to `AUTH_HUB_URL` when unset.
 
 Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup steps.
 
@@ -28,7 +31,8 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
    contract before Accounts documents it, keep production traffic disabled until the docs
    and deployed behavior are confirmed. Do not merge Mail into Accounts.
 2. **Never hardcode the domain in logic.** Use env: `APP_DOMAIN`, `AUTH_HUB_URL`,
-   `MAIL_URL`, `SUPABASE_URL`. Fallback defaults may contain `gothwadtech.com`.
+   `AUTH_SIGNIN_URL`, `MAIL_URL`, `SUPABASE_URL`. Fallback defaults may contain
+   `gothwadtech.com`.
 3. **Never commit real keys.** `.env.example` and `wrangler` examples hold placeholders
    only. Secrets go in with `wrangler secret put` or the dashboard. Never ask the user to
    paste a live key or password into chat.
@@ -81,3 +85,8 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
   expired session and bounced users through the chooser. Mail returns 401 only for an Accounts
   401/403; everything else is a 503 with its own code (`accounts_user_invalid`,
   `accounts_unexpected_response`, `auth_unavailable`). See the table in `docs/MAIL.md`.
+- Do **not** point `AUTH_HUB_URL` at the Accounts Pages host
+  (`accounts.gothwadtech.com`). Cloudflare does not invoke a same-zone Worker attached by a
+  Route for a server-to-server call, so Mail got `200 text/html` from the SPA and reported 503
+  `accounts_unexpected_response`. Server-side calls go to the Accounts Custom Domain
+  (`api.gothwadtech.com`); browser links go to `AUTH_SIGNIN_URL`.

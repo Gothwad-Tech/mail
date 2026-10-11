@@ -51,7 +51,8 @@ async function handleSession(request: Request, env: Env, config: Config): Promis
   return json({
     authenticated: true,
     user: { username: session.username, email: session.email, name: session.name },
-    accountUrl: `${config.authHubUrl}/me`,
+    // Browser-facing link, so it uses AUTH_SIGNIN_URL (see config.ts).
+    accountUrl: `${config.authSigninUrl}/me`,
     limits: { dailySendLimit: config.dailySendLimit, sendRemainingToday },
   });
 }
