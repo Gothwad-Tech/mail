@@ -22,6 +22,7 @@ export const MobileDrawer: React.FC = () => {
     setIsSettingsModalOpen,
     currentUser,
     accountUrl,
+    unreadInboxCount,
   } = useMail();
 
   if (!isMobileNavOpen) return null;
@@ -101,6 +102,11 @@ export const MobileDrawer: React.FC = () => {
               >
                 <Icon className={`w-4 h-4 ${isActive ? 'text-[#0494f4]' : 'text-neutral-500'}`} />
                 <span>{item.label}</span>
+                {item.folder === 'inbox' && unreadInboxCount > 0 && (
+                  <span className="ml-auto rounded-full bg-[#0494f4] px-1.5 text-[10px] font-bold leading-4 text-white">
+                    {unreadInboxCount > 99 ? '99+' : unreadInboxCount}
+                  </span>
+                )}
               </button>
             );
           })}

@@ -522,6 +522,35 @@ test('detail decompresses Hindi/emoji bodies; the list never carries bodies', as
   assert.equal(detail.message.bodyHtml, html);
 });
 
+test('GET detail sends an ETag and answers 304 without decompressing on revalidation', async () => {
+  stub = fullStub;
+  const id = await seedMessage({ subject: 'Cached', text: 'hello', html: '<p>hello</p>' });
+
+  const first = await worker.fetch(authed(`/api/mail/messages/${id}`), env);
+  assert.equal(first.status, 200);
+  const etag = first.headers.get('etag');
+  assert.ok(etag, 'the detail response carries a validator');
+  assert.doesNotMatch(etag!, /undefined|NaN/, 'the tag is built from real stored values');
+  assert.match(first.headers.get('cache-control') || '', /private/);
+  assert.equal((await first.json()).message.bodyText, 'hello');
+
+  const second = await worker.fetch(
+    authed(`/api/mail/messages/${id}`, { headers: { 'if-none-match': etag! } }),
+    env
+  );
+  assert.equal(second.status, 304);
+  assert.equal(await second.text(), '', 'a 304 has no body');
+
+  // A write changes the row, so the old tag must stop matching.
+  await worker.fetch(authed(`/api/mail/messages/${id}`, writeInit('PATCH', { isStarred: true })), env);
+  const third = await worker.fetch(
+    authed(`/api/mail/messages/${id}`, { headers: { 'if-none-match': etag! } }),
+    env
+  );
+  assert.equal(third.status, 200, 'stale tag revalidates to a fresh body');
+  assert.equal((await third.json()).message.isStarred, true);
+});
+
 test('a message from another mailbox is a 404', async () => {
   stub = fullStub;
   const bobId = await seedMessage({ username: 'bob' });

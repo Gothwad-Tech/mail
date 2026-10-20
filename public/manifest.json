@@ -1,9 +1,9 @@
 {
-  "id": "/",
+  "id": "/?source=pwa",
   "name": "Gothwad Mail",
   "short_name": "GothwadMail",
   "description": "Fast, modern desktop and mobile webmail for your Gothwad address, signed in with Gothwad Accounts.",
-  "start_url": "/",
+  "start_url": "/?source=pwa",
   "scope": "/",
   "display": "standalone",
   "theme_color": "#0494f4",
@@ -66,6 +66,37 @@
       "type": "image/png",
       "sizes": "512x512",
       "purpose": "maskable"
+    }
+  ],
+  "display_override": [
+    "window-controls-overlay",
+    "standalone",
+    "minimal-ui"
+  ],
+  "orientation": "any",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": [
+    "productivity",
+    "utilities"
+  ],
+  "prefer_related_applications": false,
+  "shortcuts": [
+    {
+      "name": "Compose new mail",
+      "short_name": "Compose",
+      "url": "/?compose=1",
+      "description": "Open a new message"
+    },
+    {
+      "name": "Inbox",
+      "short_name": "Inbox",
+      "url": "/?folder=inbox"
+    },
+    {
+      "name": "Starred",
+      "short_name": "Starred",
+      "url": "/?folder=starred"
     }
   ]
 }

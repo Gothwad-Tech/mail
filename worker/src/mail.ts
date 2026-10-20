@@ -68,7 +68,8 @@ export interface MessageDto {
 
 const LIST_COLUMNS =
   'id,folder,from_email,from_name,to_email,cc_emails,bcc_emails,subject,snippet,attachments,is_read,is_starred,received_at';
-const DETAIL_COLUMNS = `${LIST_COLUMNS},body_text,body_html,body_gzip`;
+// size_bytes is needed for the ETag (and for draft edits), so detail reads it too.
+const DETAIL_COLUMNS = `${LIST_COLUMNS},size_bytes,body_text,body_html,body_gzip`;
 
 export const MAX_RECIPIENTS = 25;
 export const MAX_SUBJECT_CHARS = 255;
@@ -232,14 +233,37 @@ export async function listMessages(db: Db, username: string, opts: ListOptions):
   return rows.map(toDto);
 }
 
-export async function getMessage(db: Db, username: string, id: string): Promise<MessageDto> {
+/** The raw row, without decompressing the body. */
+export async function getMessageRow(db: Db, username: string, id: string): Promise<MailRow> {
   const row = await db.first<MailRow>(
     `SELECT ${DETAIL_COLUMNS} FROM mail_messages WHERE id = ? AND to_username = ? LIMIT 1`,
     id,
     username
   );
   if (!row) throw new HttpError(404, 'not_found', 'Message not found.');
-  return toDetailDto(row);
+  return row;
+}
+
+/**
+ * Validator for conditional requests. WHY: opening an already-seen mail should
+ * not cost Cloudflare a gzip decompression. The tag is built from cheap columns
+ * (never the body), so a client that sends If-None-Match can get a 304 and the
+ * Worker stops before decompressing anything.
+ */
+export function messageEtag(row: MailRow): string {
+  return `"m-${row.id}-${row.is_read}-${row.is_starred}-${row.size_bytes}-${row.received_at}"`;
+}
+
+export function etagMatches(ifNoneMatch: string | null, etag: string): boolean {
+  if (!ifNoneMatch) return false;
+  return ifNoneMatch
+    .split(',')
+    .map((part) => part.trim().replace(/^W\//, ''))
+    .some((part) => part === '*' || part === etag);
+}
+
+export async function getMessage(db: Db, username: string, id: string): Promise<MessageDto> {
+  return toDetailDto(await getMessageRow(db, username, id));
 }
 
 export interface PatchInput {

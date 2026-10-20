@@ -200,7 +200,7 @@ All JSON. Everything except `/api/health` needs a signed-in session.
 | GET | `/api/mail/settings` | `{ retentionLimit, storageUsedBytes, storageQuotaBytes, totalMessages, starredMessages }`. |
 | PATCH | `/api/mail/settings` | Body: `{ retentionLimit: 500 \| 1500 \| 0 }`. Saves, runs retention immediately, returns the updated stats plus `cleanup: { trashPurged, trimmed }`. |
 | GET | `/api/mail/messages?folder=inbox\|starred\|sent\|drafts\|trash&limit=&before=` | One page, newest first (max 100). Returns `nextBefore` for "Load more". |
-| GET | `/api/mail/messages/:id` | One message with its decompressed body. |
+| GET | `/api/mail/messages/:id` | One message with its decompressed body. Sends an `ETag` and answers **304** to a matching `If-None-Match`, so re-opening a seen mail skips the gzip work and the download. |
 | PATCH | `/api/mail/messages/:id` | Body: `{ isRead?, isStarred?, moveToTrash? }`. |
 | DELETE | `/api/mail/messages/:id` | Permanent delete. Only for items already in Trash. |
 | POST | `/api/mail/drafts` | Create or update a draft: `{ id?, to, cc, bcc, subject, body }`. |
@@ -229,6 +229,40 @@ copy-paste brief for the Accounts agent is
 `session.ts` keeps returning one identity, and the switcher only changes *which* one.
 
 ## Frontend
+
+### Speed: what makes it feel instant
+
+1. **Folder memory cache** (`src/context/MailContext.tsx`). Switching back to a folder
+   paints the last list immediately, then revalidates in the background (a thin blue bar, no
+   spinner, no layout jump). A failed revalidation keeps the cached list rather than showing
+   an empty inbox.
+2. **Detail memory cache + prefetch.** Hovering (desktop) or touching (mobile) a row warms
+   the message body, so the tap usually opens instantly.
+3. **Conditional GET (ETag/304).** The Worker tags a message with
+   `"m-<id>-<read>-<starred>-<size>-<received_at>"`, built from cheap columns only. A repeat
+   request that sends `If-None-Match` gets `304` and **no decompression, no body**.
+   `Cache-Control: private, no-cache` keeps it per-user and always revalidated.
+4. **List responses carry no bodies.** Opening a message is the only call that decompresses
+   gzip, which is why the list stays cheap in D1.
+5. **Code splitting.** `ComposeModal` and `SettingsModal` are `React.lazy` chunks
+   (~8 KB each) mounted only when opened. First paint ships the inbox only.
+6. **No API caching in the service worker.** Mail is private; the SW caches the app shell and
+   fonts only, and `/api/*` is excluded (`navigateFallbackDenylist`).
+
+### Layout and PWA
+
+- The shell uses `100dvh` (not `100vh`) and flex `min-h-0` everywhere, so mobile browser
+  chrome never hides the composer or the bottom bar.
+- Bottom navigation is 5 folders with an unread badge, a round compose button, and
+  `env(safe-area-inset-bottom)` padding for iPhone home-bar devices.
+- Skeletons replace spinners for the list and the message body.
+- `public/manifest.json` has `display_override`, `orientation`, `categories` and three
+  shortcuts (`/?compose=1`, `/?folder=inbox`, `/?folder=starred`); the app reads those params
+  once and then clears them from the URL.
+- The tab title shows the unread inbox count: `(3) Gothwad Mail`.
+- Reduced-motion and iOS 16px input rules live in `src/index.css`.
+
+### Settings
 
 - `src/services/mailApi.ts` has `getSettings()` and `updateSettings(limit)`.
 - `src/context/MailContext.tsx` loads usage when the Settings panel opens and refreshes the

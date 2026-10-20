@@ -39,8 +39,13 @@ interface MailContextType {
   isLoadingEmails: boolean;
   emailsError: string | null;
   hasMore: boolean;
+  /** True while a background revalidation runs over an already-shown list. */
+  isRefreshing: boolean;
+  unreadInboxCount: number;
   loadMore: () => void;
   refreshEmails: () => void;
+  /** Warm the detail cache (hover / touch) so opening feels instant. */
+  prefetchEmail: (id: string) => void;
 
   currentFolder: EmailFolder;
   setCurrentFolder: (folder: EmailFolder) => void;
@@ -186,8 +191,18 @@ export const MailProvider: React.FC<{
   // ----- Mailbox state -------------------------------------------------------
   const [emails, setEmails] = useState<EmailMessage[]>([]);
   const [isLoadingEmails, setIsLoadingEmails] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [emailsError, setEmailsError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
+
+  // Per-folder memory cache: switching back to a folder shows the last list
+  // immediately (no spinner, no request) and then revalidates in the
+  // background. Kept in refs so a background refresh never re-renders twice.
+  const folderCacheRef = useRef(
+    new Map<EmailFolder, { emails: EmailMessage[]; hasMore: boolean; at: number }>()
+  );
+  const detailCacheRef = useRef(new Map<string, EmailMessage>());
+  const prefetchingRef = useRef(new Set<string>());
   const [currentFolder, setCurrentFolderState] = useState<EmailFolder>('inbox');
   const [sendRemainingToday, setSendRemainingToday] = useState<number | null>(initialRemaining);
 
@@ -313,31 +328,56 @@ export const MailProvider: React.FC<{
   // A request counter makes sure an old, slow response never overwrites a newer folder.
   const loadSeqRef = useRef(0);
 
-  const loadFolder = useCallback(async (folder: EmailFolder) => {
+  const loadFolder = useCallback(async (folder: EmailFolder, opts: { force?: boolean } = {}) => {
     const seq = ++loadSeqRef.current;
-    setIsLoadingEmails(true);
-    setEmailsError(null);
+    const cached = folderCacheRef.current.get(folder);
+    // Cache hit: paint it now, then revalidate quietly. Only a cold folder shows
+    // the full-page loading state, which is what makes browsing feel instant.
+    if (cached) {
+      setEmails(cached.emails);
+      setHasMore(cached.hasMore);
+      setEmailsError(null);
+      setIsLoadingEmails(false);
+      setIsRefreshing(true);
+    } else {
+      setEmails([]);
+      setHasMore(false);
+      setEmailsError(null);
+      setIsLoadingEmails(true);
+      setIsRefreshing(false);
+    }
     try {
       const res = await mailApi.listMessages(folder, { limit: PAGE_SIZE });
       if (seq !== loadSeqRef.current) return;
-      setEmails(res.messages.map(toEmailMessage));
+      const next = res.messages.map(toEmailMessage);
+      setEmails(next);
       setHasMore(res.nextBefore !== null);
+      folderCacheRef.current.set(folder, { emails: next, hasMore: res.nextBefore !== null, at: Date.now() });
     } catch (err) {
       if (seq !== loadSeqRef.current) return;
-      setEmails([]);
-      setHasMore(false);
-      setEmailsError(errorText(err));
+      // A failed revalidation keeps the cached list: stale beats an empty inbox.
+      if (!cached) {
+        setEmails([]);
+        setHasMore(false);
+        setEmailsError(errorText(err));
+      } else {
+        showToast(errorText(err));
+      }
     } finally {
-      if (seq === loadSeqRef.current) setIsLoadingEmails(false);
+      if (seq === loadSeqRef.current) {
+        setIsLoadingEmails(false);
+        setIsRefreshing(false);
+      }
     }
-  }, []);
+  }, [showToast]);
 
   useEffect(() => {
     void loadFolder(currentFolder);
   }, [currentFolder, loadFolder]);
 
   const refreshEmails = useCallback(() => {
-    void loadFolder(currentFolder);
+    folderCacheRef.current.delete(currentFolder);
+    void loadFolder(currentFolder, { force: true });
   }, [currentFolder, loadFolder]);
 
   const loadMore = useCallback(async () => {
@@ -418,6 +458,18 @@ export const MailProvider: React.FC<{
   }, []);
 
   // ----- Opening a message ---------------------------------------------------
+  // Warm the detail cache without showing anything. Hovering a row on desktop or
+  // touching it on mobile usually means "I'm about to open this".
+  const prefetchEmail = useCallback((id: string) => {
+    if (detailCacheRef.current.has(id) || prefetchingRef.current.has(id)) return;
+    prefetchingRef.current.add(id);
+    mailApi
+      .getMessage(id)
+      .then(({ message }) => detailCacheRef.current.set(id, toEmailMessage(message)))
+      .catch(() => undefined)
+      .finally(() => prefetchingRef.current.delete(id));
+  }, []);
+
   useEffect(() => {
     if (!selectedEmailId) {
       setOpenedMessage(null);
@@ -425,13 +477,16 @@ export const MailProvider: React.FC<{
       return;
     }
     let cancelled = false;
-    setIsLoadingSelected(true);
-    setOpenedMessage(null);
+    // Paint the cached copy instantly, then refresh it in the background.
+    const cachedDetail = detailCacheRef.current.get(selectedEmailId);
+    setOpenedMessage(cachedDetail ?? null);
+    setIsLoadingSelected(!cachedDetail);
     mailApi
       .getMessage(selectedEmailId)
       .then(({ message }) => {
         if (cancelled) return;
         const full = toEmailMessage(message);
+        detailCacheRef.current.set(full.id, full);
         setOpenedMessage(full);
         setEmails((prev) => prev.map((e) => (e.id === full.id ? { ...e, isRead: full.isRead } : e)));
         // Opening a message marks it read (same as most mail apps).
@@ -481,6 +536,8 @@ export const MailProvider: React.FC<{
       const apply = (value: boolean) => {
         setEmails((prev) => prev.map((e) => (e.id === id ? { ...e, isStarred: value } : e)));
         setOpenedMessage((prev) => (prev && prev.id === id ? { ...prev, isStarred: value } : prev));
+        const cachedDetail = detailCacheRef.current.get(id);
+        if (cachedDetail) detailCacheRef.current.set(id, { ...cachedDetail, isStarred: value });
       };
       apply(next);
       mailApi.patchMessage(id, { isStarred: next }).catch((err: unknown) => {
@@ -645,6 +702,13 @@ export const MailProvider: React.FC<{
     });
   }, [emails, searchQuery, searchFilter]);
 
+  // Unread badge: only the inbox is counted, and only from what is cached, so
+  // the title never lies about a folder the user has not loaded.
+  const unreadInboxCount = useMemo(() => {
+    const inbox = currentFolder === 'inbox' ? emails : folderCacheRef.current.get('inbox')?.emails ?? [];
+    return inbox.filter((e) => !e.isRead).length;
+  }, [currentFolder, emails]);
+
   const currentUser: UserProfile = useMemo(
     () => ({
       username: user.username,
@@ -663,8 +727,11 @@ export const MailProvider: React.FC<{
         isLoadingEmails,
         emailsError,
         hasMore,
+        isRefreshing,
+        unreadInboxCount,
         loadMore,
         refreshEmails,
+        prefetchEmail,
         currentFolder,
         setCurrentFolder,
         searchQuery,

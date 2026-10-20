@@ -39,6 +39,53 @@ allowed nahi. Data migration bhi nahi chahiye: har row pehle se `username` se sc
 
 ---
 
+## 2026-10-20 — Fast, mobile-first UI + PWA polish (layout, caching, ETag)
+
+**Owner request:** make the webmail feel right on mobile and desktop, keep the UI simple, make
+it lightweight/fast with caching so Cloudflare does not redo work for already-seen mail, and
+make PWA support solid.
+
+**Backend (why: less work for repeated reads)**
+
+- `GET /api/mail/messages/:id` now sends an **ETag** built from cheap columns only
+  (`id`, `is_read`, `is_starred`, `size_bytes`, `received_at`) and answers **304** when the
+  client's `If-None-Match` matches. The gzip decompression is skipped entirely on a 304.
+  `Cache-Control: private, no-cache` keeps it per-user and always revalidated.
+- `DETAIL_COLUMNS` now includes `size_bytes` (the tag was otherwise built from `undefined`).
+- New helpers in `worker/src/mail.ts`: `getMessageRow`, `messageEtag`, `etagMatches`.
+- Test: revalidation returns 304 with an empty body; a PATCH invalidates the tag.
+
+**Frontend (why: instant, native feel)**
+
+- `MailContext`: per-folder memory cache (paint cached list, revalidate in the background with
+  a thin progress strip; a failed refresh keeps the cached list), detail cache,
+  `prefetchEmail()` on hover/touch/focus, `isRefreshing`, `unreadInboxCount`.
+- `App.tsx`: `100dvh` shell with flex `min-h-0` (no `calc(100vh-...)`), lazy-loaded
+  `ComposeModal`/`SettingsModal` (separate ~8 KB chunks), unread count in the tab title,
+  `${'/'}` focuses search, deep links `/?folder=` and `/?compose=1` for PWA shortcuts.
+- `EmailList`: skeleton rows instead of a spinner, unread dot, 60px tap targets, keyboard
+  open on Enter, `overscroll-contain`, revalidation strip.
+- `EmailDetail`: message iframe fills the available height (no nested scroll), skeleton body,
+  attachments in a bordered footer, bottom safe-area padding.
+- `MobileBottomNav`: 5 folders + unread badge + active indicator, round compose FAB,
+  `env(safe-area-inset-bottom)` padding. `Sidebar`/`MobileDrawer`: unread badge, collapse width.
+- `index.css`: `prefers-reduced-motion` support, 16px inputs on mobile (no iOS zoom),
+  `overscroll-behavior`, height roots.
+- `index.html`: non-blocking Google Fonts (system font first, swap when ready).
+- `manifest.json`: `display_override`, orientation, categories, 3 shortcuts, `id`.
+  `vite.config.ts`: Workbox `navigateFallback`, **`/api/*` excluded from the SW cache**,
+  font + image runtime caching, `skipWaiting`/`clientsClaim`.
+
+**Verified**
+
+- `npm run lint` pass. `npm test` → **93 pass** (config 10, auth 5, worker 58, d1 15, ui 5).
+- `npm run build` → main `index` 295.34 kB (87.95 kB gzip) + `ComposeModal` 8.74 kB +
+  `SettingsModal` 8.28 kB lazy chunks; SW precache 31 entries.
+- Live preview: `If-None-Match` on a message returned **304 with 0 bytes**; folder switching
+  and the Settings retention toggle still work.
+
+---
+
 ## 2026-10-20 — Clarify the Builds settings: keep Root directory `/`, set the Preview command
 
 **Report:** while fixing the red PR check, the owner changed the **Production** Root directory

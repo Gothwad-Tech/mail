@@ -17,6 +17,18 @@
 | Deploy config | **Done** | Worker `mail`, D1 `mail` (`database_id = 87854cea-7feb-46f3-ab99-2a2137f31105`), two secrets. Dry-run clean. |
 | Docs | **Done** | README, AGENTS, TASK, PLAN, docs/MAIL.md, docs/SETUP.md, sql/ |
 
+## Phase 2.5 — UI/UX + speed + PWA (this branch)
+
+| Area | Status | Notes |
+| --- | --- | --- |
+| Conditional GET | **Done** | `ETag`/`304` on message detail; a repeat open skips gzip decompression and the download. |
+| Folder + detail cache | **Done** | Cached list paints instantly, revalidates in the background; prefetch on hover/touch. |
+| Bundle size | **Done** | Compose/Settings are lazy chunks; first paint ships the inbox only (87.95 kB gzip main). |
+| Mobile layout | **Done** | `100dvh` + `min-h-0` flex shell, 5-folder bottom bar with unread badge, safe-area padding, skeletons. |
+| Desktop layout | **Done** | Collapsible sidebar with unread badge, split reading pane, focus rings, `/` search shortcut. |
+| PWA | **Done** | Manifest `display_override`/shortcuts, offline app shell, fonts + images cached, `/api/*` never cached. |
+| Accessibility | **Done** | `prefers-reduced-motion`, visible focus, 44px+ targets, unread announced as text. |
+
 ## Phase 1 — Real app on the free tier (done earlier)
 
 | Area | Status | Notes |
