@@ -76,7 +76,7 @@ export const EmailDetail: React.FC = () => {
   return (
     <div className="flex-1 flex flex-col h-full bg-white dark:bg-[#212121] overflow-hidden select-none">
       {/* ----- Action bar ----- */}
-      <div className="h-12 border-b border-neutral-200 dark:border-[#333333] px-3 sm:px-4 flex items-center justify-between shrink-0">
+      <div className="flex h-12 shrink-0 items-center justify-between border-b border-neutral-200 px-2 sm:px-4 dark:border-[#333333]">
         <button
           onClick={() => setSelectedEmailId(null)}
           className="flex items-center justify-center w-10 h-10 rounded-full hover:bg-neutral-100 dark:hover:bg-[#2e2e2e] text-neutral-600 dark:text-neutral-300"
@@ -148,25 +148,35 @@ export const EmailDetail: React.FC = () => {
       </div>
 
       {/* ----- Body ----- */}
-      <div className="flex-1 min-h-0 overflow-y-auto select-text">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain select-text">
         {isLoadingSelected && !selectedEmail.bodyText && !selectedEmail.bodyHtml ? (
-          <p className="p-6 text-sm text-neutral-500">Loading message…</p>
+          <div className="animate-pulse space-y-3 p-5 sm:p-6" aria-busy="true" aria-label="Loading message">
+            <div className="h-3 w-2/3 rounded bg-neutral-200 dark:bg-[#333333]" />
+            <div className="h-3 w-full rounded bg-neutral-100 dark:bg-[#2e2e2e]" />
+            <div className="h-3 w-11/12 rounded bg-neutral-100 dark:bg-[#2e2e2e]" />
+            <div className="h-3 w-3/4 rounded bg-neutral-100 dark:bg-[#2e2e2e]" />
+          </div>
         ) : selectedEmail.bodyHtml ? (
-          <iframe
-            title="Message body"
-            // No allow-scripts: scripts stay off. Popups are allowed only so links open in a new tab.
-            sandbox="allow-popups allow-popups-to-escape-sandbox"
-            srcDoc={buildSrcDoc(selectedEmail.bodyHtml)}
-            className="w-full h-[60vh] min-h-[320px] bg-white border-0"
-          />
+          // Fills the available height instead of a fixed 60vh, so long mail is
+          // readable on a phone without a scroll bar inside a scroll bar.
+          <div className="flex min-h-[240px] flex-1 flex-col">
+            <iframe
+              title="Message body"
+              // No allow-scripts: scripts stay off. Popups are allowed only so links open in a new tab.
+              sandbox="allow-popups allow-popups-to-escape-sandbox"
+              srcDoc={buildSrcDoc(selectedEmail.bodyHtml)}
+              className="w-full flex-1 border-0 bg-white"
+              style={{ minHeight: '240px' }}
+            />
+          </div>
         ) : (
-          <div className="p-4 sm:p-6 text-sm leading-relaxed text-neutral-800 dark:text-neutral-200 whitespace-pre-wrap break-words select-text">
+          <div className="whitespace-pre-wrap break-words p-4 text-sm leading-relaxed text-neutral-800 select-text sm:p-6 dark:text-neutral-200">
             {selectedEmail.bodyText || '(empty message)'}
           </div>
         )}
 
         {selectedEmail.attachments.length > 0 && (
-          <div className="px-4 sm:px-6 pb-4">
+          <div className="shrink-0 border-t border-neutral-100 px-4 pb-4 pt-3 sm:px-6 dark:border-[#2e2e2e]">
             <p className="text-xs font-semibold text-neutral-500 mb-2">
               {selectedEmail.attachments.length} attachment{selectedEmail.attachments.length > 1 ? 's' : ''}
             </p>
@@ -192,7 +202,7 @@ export const EmailDetail: React.FC = () => {
       </div>
 
       {/* ----- Reply / forward ----- */}
-      <div className="border-t border-neutral-200 dark:border-[#333333] px-4 sm:px-6 py-3 shrink-0">
+      <div className="shrink-0 border-t border-neutral-200 px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-6 dark:border-[#333333]">
         {!isReplyOpen ? (
           <div className="flex items-center gap-2">
             <button

@@ -88,6 +88,35 @@ export default defineConfig(({mode}) => {
         },
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+          // The app shell works offline; /api/* always goes to the network,
+          // because mail bodies are private and must never be cached in the SW.
+          navigateFallback: '/index.html',
+          navigateFallbackDenylist: [/^\/api\//],
+          cleanupOutdatedCaches: true,
+          clientsClaim: true,
+          skipWaiting: true,
+          runtimeCaching: [
+            {
+              // Google Fonts: served from cache after the first visit, refreshed
+              // quietly in the background (no blank text, no repeat download).
+              urlPattern: /^https:\/\/fonts\.(googleapis|gstatic)\.com\//,
+              handler: 'StaleWhileRevalidate',
+              options: {
+                cacheName: 'google-fonts',
+                expiration: { maxEntries: 12, maxAgeSeconds: 60 * 60 * 24 * 365 },
+                cacheableResponse: { statuses: [0, 200] },
+              },
+            },
+            {
+              // Icons and images from the app's own bundle.
+              urlPattern: /\.(?:png|jpg|jpeg|svg|ico|webp)$/,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'static-images',
+                expiration: { maxEntries: 60, maxAgeSeconds: 60 * 60 * 24 * 30 },
+              },
+            },
+          ],
         },
         devOptions: {
           enabled: true,
