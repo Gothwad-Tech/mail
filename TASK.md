@@ -2,6 +2,43 @@
 
 Updated every session. Newest first.
 
+## 2026-10-20 — Multi-account switcher: plan + Accounts-side prompt (docs only, no code)
+
+**Owner request:** Google jaisa account section — ek hi jagah saare signed-in Gothwad accounts,
+avatar + unread, tap karke us mailbox par ~1 second me switch. Abhi sirf ek email dikhti hai
+jabki `accounts.gothwadtech.com` par 2 logins hain.
+
+**Finding:** ye Mail me akela fix nahi ho sakta. `worker/src/session.ts` har request par Accounts
+se **ek** identity leta hai, aur Accounts ek hi session per browser rakhta hai. Mail ko apni
+account list rakhne par majboor karna = doosre accounts ke credentials Mail me rakhna, jo
+allowed nahi. Data migration bhi nahi chahiye: har row pehle se `username` se scoped hai.
+
+**Deliverables (docs only this session):**
+
+- `docs/ACCOUNTS_AGENT_PROMPT.md` — self-contained prompt for the Accounts agent: per-account
+  session cookies (`gothwad_sess_a..f`), HMAC-signed `gothwad_accounts` list, `gothwad_active`,
+  and four endpoints (`GET /api/auth/accounts`, `POST /api/auth/switch`,
+  `POST /api/auth/accounts/:id/signout`, `GET /signin?choose=1&add=1`). Includes the cookie
+  constraints Mail's proxy depends on, 8 required tests, and legacy single-account fallback so
+  nothing breaks.
+- `docs/MULTI_ACCOUNT_PLAN.md` — Google-parity behaviour table, Mail-side work (proxy endpoints
+  in a new `worker/src/accounts.ts`, session plumbing + cache reset, switcher UI in
+  `AccountSheet`, instant switch), security checklist, 12 acceptance tests, $0 cost, rollback.
+
+**Key design decisions:**
+
+- **Server-side path resolution, not a client header.** The active account is a cookie resolved
+  by Accounts, so `GET /api/auth/me` keeps returning one identity and `session.ts` needs no change.
+- **Mail proxies Accounts, no CORS.** Reuses `takeUpstreamCookies` so `Set-Cookie` rotation is
+  forwarded exactly as it is today.
+- **404 fallback = hidden switcher.** Mail can ship first and light up when Accounts deploys.
+- **Caches cleared before first paint on switch** (privacy, not just freshness).
+- Unread per account is computed in Mail's D1 for Accounts-verified usernames only.
+
+**Blocked on:** Accounts repo (Part A). Mail-side Part B starts when that contract exists.
+
+---
+
 ## 2026-10-20 — Clarify the Builds settings: keep Root directory `/`, set the Preview command
 
 **Report:** while fixing the red PR check, the owner changed the **Production** Root directory

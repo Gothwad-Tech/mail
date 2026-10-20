@@ -219,6 +219,15 @@ A write (POST/PATCH/DELETE) that uses cookies must:
 
 Bearer-token requests skip the origin check, because they do not use cookies.
 
+## Multiple accounts (planned)
+
+Mail shows one mailbox today because Accounts holds one session per browser. The design for a
+Google-style switcher — split between the Accounts repo and this one, with the security rules and
+acceptance tests — lives in [`MULTI_ACCOUNT_PLAN.md`](./MULTI_ACCOUNT_PLAN.md), and the
+copy-paste brief for the Accounts agent is
+[`ACCOUNTS_AGENT_PROMPT.md`](./ACCOUNTS_AGENT_PROMPT.md). Nothing in the current code blocks it:
+`session.ts` keeps returning one identity, and the switcher only changes *which* one.
+
 ## Frontend
 
 - `src/services/mailApi.ts` has `getSettings()` and `updateSettings(limit)`.
