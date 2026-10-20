@@ -7,6 +7,8 @@ import {
   SessionUser,
   MailboxSettings,
   RetentionLimit,
+  AccountSummary,
+  AccountsInfo,
 } from '../services/mailApi';
 
 export interface SearchFilterOptions {
@@ -109,6 +111,21 @@ interface MailContextType {
   dailySendLimit: number | null;
   accountUrl: string;
 
+  // Account switcher (multiple signed-in Gothwad accounts)
+  accounts: AccountSummary[];
+  activeAccountId: string | null;
+  accountUnread: Record<string, number>;
+  /** Accounts has not deployed the multi-account API yet: hide the switcher. */
+  accountsUnsupported: boolean;
+  isLoadingAccounts: boolean;
+  /** Slot id currently being switched or signed out (row spinner). */
+  switchingAccountId: string | null;
+  refreshAccounts: () => void;
+  switchAccount: (id: string) => Promise<boolean>;
+  signOutAccount: (id: string) => Promise<void>;
+  /** Link to Accounts' sign-in page in "add another account" mode. */
+  addAccountUrl: string;
+
   // Notifications
   toast: ToastInfo | null;
   dismissToast: () => void;
@@ -186,8 +203,17 @@ export const MailProvider: React.FC<{
   sendRemainingToday: number | null;
   dailySendLimit: number | null;
   accountUrl: string;
+  /** Re-reads /api/session after the active account changed. */
+  onSessionChanged: () => Promise<void>;
   children: React.ReactNode;
-}> = ({ user, sendRemainingToday: initialRemaining, dailySendLimit, accountUrl, children }) => {
+}> = ({
+  user,
+  sendRemainingToday: initialRemaining,
+  dailySendLimit,
+  accountUrl,
+  onSessionChanged,
+  children,
+}) => {
   // ----- Mailbox state -------------------------------------------------------
   const [emails, setEmails] = useState<EmailMessage[]>([]);
   const [isLoadingEmails, setIsLoadingEmails] = useState(false);
@@ -379,6 +405,114 @@ export const MailProvider: React.FC<{
     folderCacheRef.current.delete(currentFolder);
     void loadFolder(currentFolder, { force: true });
   }, [currentFolder, loadFolder]);
+
+  // ----- Account switcher ----------------------------------------------------
+  // The list itself lives in Accounts (one session per account there). Mail only
+  // mirrors it for the UI and adds the unread counts from its own D1.
+  const [accounts, setAccounts] = useState<AccountSummary[]>([]);
+  const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
+  const [accountUnread, setAccountUnread] = useState<Record<string, number>>({});
+  const [accountsUnsupported, setAccountsUnsupported] = useState(false);
+  const [isLoadingAccounts, setIsLoadingAccounts] = useState(false);
+  const [switchingAccountId, setSwitchingAccountId] = useState<string | null>(null);
+
+  const applyAccounts = useCallback((info: AccountsInfo) => {
+    setAccounts(info.accounts);
+    setActiveAccountId(info.activeId);
+    setAccountUnread(info.unread);
+    setAccountsUnsupported(info.unsupported === true);
+  }, []);
+
+  const refreshAccounts = useCallback(() => {
+    setIsLoadingAccounts(true);
+    void mailApi
+      .getAccounts()
+      .then(applyAccounts)
+      // A failed list is not worth a toast: the sheet still shows the signed-in
+      // user, and the next open retries. A 401 is handled by the session hook.
+      .catch(() => undefined)
+      .finally(() => setIsLoadingAccounts(false));
+  }, [applyAccounts]);
+
+  // One GET per page load keeps the switcher ready before it is opened; it is
+  // a single indexed count query in D1, not a poll.
+  useEffect(() => {
+    refreshAccounts();
+  }, [refreshAccounts]);
+
+  /**
+   * Everything that belongs to the old account must be gone before the next
+   * paint. The provider is also keyed by username in App, so this is belt and
+   * braces: a cache that survived a switch would show one mailbox to another.
+   */
+  const clearAccountCaches = useCallback(() => {
+    folderCacheRef.current.clear();
+    detailCacheRef.current.clear();
+    prefetchingRef.current.clear();
+    loadSeqRef.current += 1; // in-flight list responses must not land either
+  }, []);
+
+  /** Resolves true when the active account really changed. */
+  const switchAccount = useCallback(
+    async (id: string): Promise<boolean> => {
+      if (id === activeAccountId) return true;
+      setSwitchingAccountId(id);
+      try {
+        const info = await mailApi.switchAccount(id);
+        applyAccounts(info);
+        clearAccountCaches();
+        setEmails([]);
+        setHasMore(false);
+        setSelectedEmailId(null);
+        setOpenedMessage(null);
+        setSelectedIds([]);
+        closeCompose();
+        // New identity -> App re-reads /api/session and remounts the provider.
+        await onSessionChanged();
+        return true;
+      } catch (err) {
+        showToast(errorText(err));
+        // 409: Accounts no longer has a session for that slot. Drop the row.
+        if (err instanceof ApiError && err.status === 409) refreshAccounts();
+        return false;
+      } finally {
+        setSwitchingAccountId(null);
+      }
+    },
+    [
+      activeAccountId,
+      applyAccounts,
+      clearAccountCaches,
+      closeCompose,
+      onSessionChanged,
+      refreshAccounts,
+      showToast,
+    ]
+  );
+
+  const signOutAccount = useCallback(
+    async (id: string) => {
+      setSwitchingAccountId(id);
+      try {
+        const info = await mailApi.signOutAccount(id);
+        applyAccounts(info);
+        // Signing out the active account means the whole mailbox changes, or
+        // the browser is signed out entirely if no account is left.
+        if (id === activeAccountId || !info.activeId) {
+          clearAccountCaches();
+          setEmails([]);
+          setSelectedEmailId(null);
+          setOpenedMessage(null);
+          await onSessionChanged();
+        }
+      } catch (err) {
+        showToast(errorText(err));
+      } finally {
+        setSwitchingAccountId(null);
+      }
+    },
+    [activeAccountId, applyAccounts, clearAccountCaches, onSessionChanged, showToast]
+  );
 
   const loadMore = useCallback(async () => {
     const last = emails[emails.length - 1];
@@ -778,6 +912,16 @@ export const MailProvider: React.FC<{
         sendRemainingToday,
         dailySendLimit,
         accountUrl,
+        accounts,
+        activeAccountId,
+        accountUnread,
+        accountsUnsupported,
+        isLoadingAccounts,
+        switchingAccountId,
+        refreshAccounts,
+        switchAccount,
+        signOutAccount,
+        addAccountUrl: '/api/mail/accounts/add',
         toast,
         dismissToast,
         showToast,

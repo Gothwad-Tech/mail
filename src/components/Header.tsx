@@ -30,9 +30,31 @@ export const Header: React.FC<HeaderProps> = ({ onToggleSidebar }) => {
     setIsSettingsModalOpen,
     setIsMobileNavOpen,
     currentUser,
+    accounts,
+    activeAccountId,
   } = useMail();
 
   const [isAccountSheetOpen, setIsAccountSheetOpen] = useState(false);
+
+  // Shift+A opens the account switcher, like the other single-key shortcuts.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return;
+      }
+      if (e.shiftKey && (e.key === 'A' || e.key === 'a')) {
+        e.preventDefault();
+        setIsAccountSheetOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // A second signed-in account is worth showing: overlapping circles on the
+  // avatar button are the same hint Gmail gives before you open the list.
+  const otherAccounts = accounts.filter((a) => a.id !== activeAccountId).slice(0, 2);
   const searchFilterRef = useRef<HTMLDivElement>(null);
 
   // Close filter popover on click outside
@@ -108,10 +130,17 @@ export const Header: React.FC<HeaderProps> = ({ onToggleSidebar }) => {
           <button
             type="button"
             onClick={() => setIsAccountSheetOpen(true)}
-            className="w-8 h-8 rounded-full bg-[#0494f4] text-white flex items-center justify-center font-bold text-xs tracking-tight ml-1 shrink-0 shadow-sm"
-            aria-label="Account details"
+            className="relative ml-1 flex h-8 shrink-0 items-center rounded-full shadow-sm"
+            aria-label={accounts.length > 1 ? `Accounts (${accounts.length})` : 'Account details'}
           >
-            {currentUser.avatarText}
+            {otherAccounts.length > 0 && (
+              <span className="mr-[-10px] flex h-8 w-8 items-center justify-center rounded-full border-2 border-white bg-neutral-400 text-[10px] font-bold text-white dark:border-[#212121] dark:bg-neutral-600">
+                +{accounts.length - 1}
+              </span>
+            )}
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#0494f4] text-xs font-bold tracking-tight text-white">
+              {currentUser.avatarText}
+            </span>
           </button>
 
           {/* Mobile Search Filter Dropdown */}
@@ -374,10 +403,18 @@ export const Header: React.FC<HeaderProps> = ({ onToggleSidebar }) => {
 
           <button
             onClick={() => setIsAccountSheetOpen(true)}
-            className="w-10 h-10 rounded-full bg-[#0494f4] text-white flex items-center justify-center font-bold text-sm tracking-tight shadow-sm hover:opacity-90 transition-opacity"
-            aria-label="User profile"
+            className="flex h-10 items-center rounded-full shadow-sm transition-opacity hover:opacity-90"
+            aria-label={accounts.length > 1 ? `Accounts (${accounts.length})` : 'User profile'}
+            title={accounts.length > 1 ? 'Switch account (Shift+A)' : 'Account'}
           >
-            {currentUser.avatarText}
+            {otherAccounts.length > 0 && (
+              <span className="mr-[-12px] flex h-10 w-10 items-center justify-center rounded-full border-2 border-white bg-neutral-400 text-[11px] font-bold text-white dark:border-[#212121] dark:bg-neutral-600">
+                +{accounts.length - 1}
+              </span>
+            )}
+            <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[#0494f4] text-sm font-bold tracking-tight text-white">
+              {currentUser.avatarText}
+            </span>
           </button>
         </div>
       </header>

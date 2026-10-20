@@ -77,3 +77,15 @@
 - Restore from Trash.
 - Server-side search (SQLite `LIKE` or FTS5).
 - Optional scheduled cleanup with a Cron Trigger, as a safety net behind the inline runs.
+
+## Phase 2.6 — Multi-account switcher
+
+| Area | Status | Notes |
+| --- | --- | --- |
+| Accounts service (other repo) | **Blocked** | Prompt ready: `docs/ACCOUNTS_AGENT_PROMPT.md`. Per-account session cookies + active slot + switch API. |
+| Mail proxy API | **Done** | `GET /api/mail/accounts`, `POST …/switch`, `POST …/signout`, `GET …/add` in `worker/src/accounts.ts`; 404 → `unsupported: true`. |
+| Per-account unread | **Done** | One grouped D1 query, only for Accounts-verified usernames. |
+| Switcher UI | **Done** | `AccountSheet` list with avatars, unread pills, active check, per-row sign-out, add-account; `+n` avatar bubble; `Shift+A`. |
+| Instant switch | **Done** | Caches cleared, provider keyed by username, session re-read without a reload. |
+| Local + automated verification | **Done** | Two-account dev stub; 14 worker tests + 1 jsdom switch test (108 total). |
+| Live two-account check | **Pending** | Needs the Accounts PR deployed. |

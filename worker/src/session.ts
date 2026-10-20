@@ -70,7 +70,9 @@ export function takeUpstreamCookies(request: Request): string[] {
   return list;
 }
 
-function keepAccountsCookies(request: Request, res: Response): void {
+/** Re-exported for the account switcher (see accounts.ts): it must forward the
+ * rotated Accounts cookies exactly like the session check does. */
+export function keepAccountsCookies(request: Request, res: Response): void {
   // Only Accounts' own gothwad_* cookies. Anything else from upstream is ignored.
   // getSetCookie() gives each Set-Cookie separately (get() would join them).
   // Our worker type lib does not declare it yet, so we cast.

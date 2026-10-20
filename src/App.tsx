@@ -196,7 +196,7 @@ const Screen: React.FC<{ title: string; detail?: string; onRetry?: () => void }>
 
 export default function App() {
   // Auth gate: nothing private renders until the Worker confirms the Accounts session.
-  const { state, retry } = useSession();
+  const { state, retry, refresh } = useSession();
 
   if (state.status === 'loading') return <Screen title="Checking your Gothwad account…" />;
   if (state.status === 'redirecting') return <Screen title="Redirecting you to sign in…" />;
@@ -207,10 +207,14 @@ export default function App() {
   const { info } = state;
   return (
     <MailProvider
+      // Keyed by username: switching accounts remounts the provider, so no
+      // cached list, detail body or draft can leak across accounts.
+      key={info.user.username}
       user={info.user}
       sendRemainingToday={info.limits.sendRemainingToday}
       dailySendLimit={info.limits.dailySendLimit}
       accountUrl={info.accountUrl}
+      onSessionChanged={refresh}
     >
       <MainLayout />
     </MailProvider>

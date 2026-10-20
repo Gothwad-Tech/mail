@@ -65,6 +65,24 @@ export interface MailboxSettings {
   updatedAt?: string;
 }
 
+/** One signed-in Gothwad account, as listed by the Worker (see worker/src/accounts.ts). */
+export interface AccountSummary {
+  id: string;
+  username: string;
+  name: string | null;
+  email: string;
+  lastUsedAt: string | null;
+}
+
+export interface AccountsInfo {
+  activeId: string | null;
+  accounts: AccountSummary[];
+  /** username -> unread inbox count, computed in Mail's D1. */
+  unread: Record<string, number>;
+  /** Accounts has not deployed the multi-account API yet: hide the switcher. */
+  unsupported?: true;
+}
+
 export interface RetentionCleanup {
   trashPurged: number;
   trimmed: number;
@@ -142,6 +160,15 @@ export const mailApi = {
       method: 'PATCH',
       body: { retentionLimit },
     }),
+
+  /** Signed-in accounts for the switcher (empty + unsupported before Accounts ships). */
+  getAccounts: () => request<AccountsInfo>('/mail/accounts'),
+
+  switchAccount: (id: string) =>
+    request<AccountsInfo>('/mail/accounts/switch', { method: 'POST', body: { id } }),
+
+  signOutAccount: (id: string) =>
+    request<AccountsInfo>('/mail/accounts/signout', { method: 'POST', body: { id } }),
 
   send: (payload: { to: string[]; cc: string[]; bcc: string[]; subject: string; body: string; draftId?: string }) =>
     request<{ id: string | null; sent: true; saved: boolean; remainingToday: number }>('/mail/send', {
