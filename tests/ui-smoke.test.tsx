@@ -294,15 +294,18 @@ test('the account switcher lists every signed-in account and switches in place',
     (row as HTMLElement).click();
   });
 
-  // 4. The whole app is now bob: sidebar shows bob, the sheet closed, and the
+  // 4. The sheet closes only after the switch resolved (bob's row in the open
+  //    sheet also contains his address, so wait for the close first).
+  await waitFor(() => !text().includes('Add another account'), 'switcher closed after switching');
+
+  // 5. The whole app is now bob: sidebar shows bob, the sheet is gone, and the
   //    mailbox reloaded for bob (not alice's cached list).
   await waitFor(() => text().includes('bob@gothwadtech.com'), 'app switched to bob');
   assert.equal(
     [...document.querySelectorAll('button')].some((b) => b.textContent?.includes('alice@gothwadtech.com')),
     false,
-    'the sheet is closed after switching'
+    'no alice row is left behind'
   );
-  assert.equal(text().includes('Add another account'), false, 'switcher closed, not left open');
   await waitFor(() => text().includes('Invoice for October'), 'bob inbox loaded');
 
   await act(async () => {

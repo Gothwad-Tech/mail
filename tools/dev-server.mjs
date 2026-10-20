@@ -251,6 +251,14 @@ const server = http.createServer(async (req, res) => {
       headers.set('origin', 'http://localhost:3000');
     }
 
+    // A request that carries any cookie is decided by the local Accounts stub
+    // above (so the signed-out branches are testable). The plain browser preview
+    // has no Accounts cookie, so give it the stub session instead of the dev
+    // bypass: that way the account switcher is visible locally, and the request
+    // still goes through the real cookie path the production browser uses.
+    const worksWithCookies = Boolean(req.headers.cookie);
+    if (!worksWithCookies) headers.set('cookie', 'gothwad_at=good');
+
     const url = `http://localhost:${PORT}${req.url}`;
     const request = new Request(url, {
       method: req.method,
@@ -258,16 +266,10 @@ const server = http.createServer(async (req, res) => {
       body: body && body.length > 0 ? body : undefined,
     });
 
-    // A request that carries any cookie is decided by the local Accounts stub
-    // above (so the signed-out branches are testable); everything else (the
-    // plain browser preview) uses the dev bypass and opens without sign-in.
-    // The plain browser preview has no Accounts cookie. Give it the local stub
-    // session (instead of the dev bypass) so the switcher is visible locally;
-    // a request that already carries cookies is left exactly as the tests send
-    // it, which keeps the signed-out branches testable.
-    const worksWithCookies = Boolean(req.headers.cookie);
-    if (!worksWithCookies) headers.set('cookie', 'gothwad_at=good');
-    const requestEnv = worksWithCookies ? { ...env, DEV_AUTH_USERNAME: undefined } : env;
+    // Every preview request now has a cookie (injected above when the browser
+    // had none), so the dev bypass must stay off: otherwise /api/session says
+    // one user while /api/mail/accounts says another.
+    const requestEnv = { ...env, DEV_AUTH_USERNAME: undefined };
 
     const response = await worker.fetch(request, requestEnv);
     res.statusCode = response.status;
