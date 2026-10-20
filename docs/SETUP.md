@@ -169,6 +169,20 @@ while `main` stayed green. The block is intentionally **empty**: a Preview only 
 bindings listed inside it, so a branch build has **no D1 database and no secrets** and can
 never read or trim production mail. Production deploys ignore the block.
 
+**If the PR check is still red after this block exists**, the dashboard's Preview command is
+not seeing this config. `worker/wrangler.toml` is not at the repo root, and the default
+`npx wrangler preview` looks for `wrangler.toml` in the directory it runs in. One-time
+dashboard fix (owner only):
+
+> Workers & Pages → `mail` → **Settings → Build → Preview command** →
+> `npx wrangler preview --config worker/wrangler.toml`
+>
+> (If there is no Preview command field, set **Root directory** to `worker` instead, so
+> `wrangler.toml` is found automatically.)
+
+This was already red on the previously merged PR #7, so it is a repo setting, not a code
+problem: the production branch (`main`) runs `npx wrangler deploy` and stays green.
+
 Want real preview data later? Create a **separate** D1 database (e.g. `mail-preview`) and add
 its binding under `[previews]`. Never point previews at `mail`.
 
