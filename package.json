@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit && tsc -p worker/tsconfig.json --noEmit",
-    "test:worker": "node --import tsx --test worker/test/worker.test.ts",
+    "test:worker": "node --import tsx --test worker/test/*.test.ts",
     "test:config": "node --import tsx --test tests/worker-config.test.ts",
     "test:auth": "node --import tsx --test tests/auth-redirect.test.ts",
     "worker:dev": "wrangler dev --config worker/wrangler.toml --port 8787",
@@ -17,9 +17,10 @@
     "worker:secrets:list": "wrangler secret list --config worker/wrangler.toml",
     "worker:secrets": "wrangler secret put ACCOUNTS_INTERNAL_TOKEN --config worker/wrangler.toml && wrangler secret put RESEND_API_KEY --config worker/wrangler.toml",
     "test:ui": "node --import tsx --test tests/ui-smoke.test.tsx",
-    "test": "npm run test:config && npm run test:auth && npm run test:worker && npm run test:d1 && npm run test:ui",
+    "test": "npm run check:sizes && npm run test:config && npm run test:auth && npm run test:worker && npm run test:d1 && npm run test:ui",
     "test:d1": "node --import tsx --test tests/local-d1.test.ts",
-    "preview:api": "node --import tsx tools/dev-server.mjs"
+    "preview:api": "node --import tsx tools/dev-server.mjs",
+    "check:sizes": "node tools/check-file-sizes.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",

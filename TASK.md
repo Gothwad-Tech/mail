@@ -2,6 +2,43 @@
 
 Updated every session. Newest first.
 
+## 2026-10-20 — File size rule (500 target / 800 max) + the splits it required
+
+**Owner request:** ek permanent rule docs me likho — koi bhi code file 500–800 lines ke andar
+rahe, try 500 tak; jo file pehle se badi hai use parts me todo **bina functionality/logic
+badle**. Sirf likhna nahi, abhi follow bhi karo.
+
+**Rule (AGENTS.md #12, now enforced, not a note):**
+
+- target **≤ 500 lines**, hard max **800**, per `.ts` / `.tsx` / `.mjs`
+- over 500 → split in the same session; behaviour identical (same exports, same logic, same
+  user-visible text, same tests)
+- docs/lock/CSS/JSON/generated output exempt
+- `npm run check:sizes` (`tools/check-file-sizes.mjs`) fails > 800, warns > 500, and runs as
+  the **first** step of `npm test` — so rule yaad rakhne par depend nahi karta
+
+**Splits done in this session (all behaviour-preserving):**
+
+| Before | After |
+| --- | --- |
+| `worker/test/worker.test.ts` **1291** | `helpers.ts` 262 + `health` 68, `session` 260, `messages` 142, `mutations` 121, `drafts` 64, `send` 118, `settings` 96, `inbound` 173, `misc` 60, `accounts` 255 |
+| `src/context/MailContext.tsx` **944** | `MailContext.tsx` 252 (composition) + `mailContextTypes.ts` 141, `mailHelpers.ts` 69, `useMailbox.ts` 312, `useCompose.ts` 180, `useMailboxSettings.ts` 80, `useAccountsSwitcher.ts` 119 |
+| `worker/src/mail.ts` **527** | `mail.ts` 19 (barrel) + `mail-types.ts` 187, `mail-read.ts` 86, `mail-write.ts` 271 |
+
+Test harness: one `helpers.ts` with real in-memory SQLite + a replaceable upstream stub, and a
+live `h` object (`h.env`, `h.stub`, `h.seen`) so every test file shares the same beforeEach
+wiring. `test:worker` now runs `worker/test/*.test.ts`.
+
+`toEmailMessage` / `toComposeData` are still re-exported from `MailContext`, so components did
+not change. `useMail()` contract is untouched.
+
+**Verified:** `npm run lint` clean, `npm run check:sizes` clean (57 files), `npm test` →
+**108 pass** (config 10, auth 5, worker 72, d1 15, ui 6), `npm run build` OK
+(304.41 kB / 90.21 kB gzip), preview + `/api/mail/accounts` still fine. `dev-dist/` added to
+`.gitignore`.
+
+---
+
 ## 2026-10-20 — Account switcher built on the Mail side (Google flow), tested end to end
 
 **Owner request:** accounts agent ko prompt de diya; Mail side parallel me banao — Google jaisa
