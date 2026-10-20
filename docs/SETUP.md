@@ -1,9 +1,11 @@
 # Setup — steps for a human
 
-These are the steps only a person can do: dashboards, DNS, SQL in the Supabase editor,
-and secrets. An agent must not run them, and must not ask for live keys in chat.
+These are the steps only a person can do: dashboards, DNS, routing and secrets. An agent must
+not run them, and must not ask for live keys in chat.
 
-Replace placeholders like `YOUR_PROJECT_REF`, `YOUR_DOMAIN` and `re_...` with your own values.
+Gothwad Mail is **100% Cloudflare native**: Workers + D1. There is no Supabase project, no
+database URL and no database key to paste anywhere. Replace placeholders like `YOUR_DOMAIN`
+and `re_...` with your own values.
 
 ---
 
@@ -15,380 +17,247 @@ Replace placeholders like `YOUR_PROJECT_REF`, `YOUR_DOMAIN` and `re_...` with yo
 | `AUTH_HUB_URL` | `https://api.gothwadtech.com` | `wrangler.toml` `[vars]` (public) |
 | `AUTH_SIGNIN_URL` | `https://accounts.gothwadtech.com` | `wrangler.toml` `[vars]` (public) |
 | `MAIL_URL` | `https://mail.gothwadtech.com` | `wrangler.toml` `[vars]` (public) |
-| `SUPABASE_URL` | `https://YOUR_PROJECT_REF.supabase.co` | `wrangler.toml` `[vars]` (public) |
-| `SUPABASE_SERVICE_ROLE_KEY` | Mail project's `sb_secret_...` (or legacy `eyJ...`) | **secret** |
-| `RESEND_API_KEY` | `re_...` | **secret** |
+| D1 database | `mail` (binding `DB`) | `wrangler.toml` `[[d1_databases]]` (public) |
 | `ACCOUNTS_INTERNAL_TOKEN` | Same value as Accounts' `MAIL_INTERNAL_TOKEN` | **secret** |
+| `RESEND_API_KEY` | `re_...` | **secret** |
 
 `AUTH_HUB_URL` is the base for **every server-side Accounts call** (`/api/auth/me`,
 `/api/oauth/userinfo`, `/api/internal/usernames/:username`), so it must be a host that reaches
 the Accounts Worker: its **Custom Domain** `https://api.gothwadtech.com`. Cloudflare does not
 invoke a same-zone Worker behind a Route for a server-to-server call, so
-`https://accounts.gothwadtech.com` answers the Pages SPA HTML there and Mail reports
-503 `accounts_unexpected_response`. `AUTH_SIGNIN_URL` is used only for browser-facing links
-(the sign-in redirect and `accountUrl`); it is optional and falls back to `AUTH_HUB_URL`.
+`https://accounts.gothwadtech.com` answers the Pages SPA HTML there and Mail reports 503
+`accounts_unexpected_response`. `AUTH_SIGNIN_URL` is used only for browser-facing links (the
+sign-in redirect and `accountUrl`); it is optional and falls back to `AUTH_HUB_URL`.
 
-The domain and URLs are not secrets. Keys and the shared internal token are. Set them with
-`wrangler secret put` or in the Cloudflare dashboard, never in `wrangler.toml` or git. Do
+The domain, URLs and the D1 database id are not secrets. The two Worker secrets are. Set them
+with `wrangler secret put` or in the Cloudflare dashboard, never in `wrangler.toml` or git. Do
 not paste the token into chat. The token value must match on the Accounts and Mail Workers.
 
 ---
 
-## 1. Supabase: create a separate Mail project
+## 1. Cloudflare D1: the `mail` database
 
-1. Create a new Supabase project for Gothwad Mail. Do not reuse the Accounts project.
-2. In this new project's **SQL Editor**, paste the whole file `supabase/mail.sql` and run
-   it. It is safe to run again.
-3. Check: the table `public.mail_messages` exists, and RLS is on.
-4. Save this Mail project's Project URL and service-role key for the Worker steps below.
-   Do not use the Accounts project's URL or key.
+The database already exists. Its id is committed in `worker/wrangler.toml`:
 
-Mail does not read Accounts' `public.profiles`; the Worker stores `user_id` as null and uses
-the Accounts HTTP endpoint for inbound username checks. The browser never talks to Mail's
-table; only the Worker uses the Mail service key.
+```toml
+[[d1_databases]]
+binding = "DB"
+database_name = "mail"
+database_id = "87854cea-7feb-46f3-ab99-2a2137f31105"
+```
+
+To confirm it in the dashboard:
+
+1. Cloudflare dashboard → **Storage & Databases → D1 SQL Database**.
+2. Open **`mail`**, copy the **Database ID** if you ever need to replace the file value.
+3. Optionally open **Console** and paste **`sql/00_d1_console_bootstrap.sql`** (comment-free).
+   This is **not required**: the Worker creates the tables itself on the first request. It is
+   handy when you want to see the schema before deploying.
+
+Schema notes:
+
+- `mail_settings` = one row per mailbox (retention + quota).
+- `mail_messages` = the mailbox. Bodies are gzip BLOBs (`body_gzip`); attachments are metadata
+  only.
+- **Never add `PRAGMA` statements** to D1 SQL. Remote D1 already enables `foreign_keys` and
+  rejects PRAGMA with `SQLITE_AUTH`.
+- `.github`-style migrations are not needed: `worker/src/db.ts` runs idempotent
+  `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` in one `batch()` per isolate.
+
+If you ever recreate the database, update `database_id` here **and** in `wrangler.toml`.
+`npm run test:config` fails if the id is a placeholder or the binding is wrong.
 
 ---
 
-## 2. Accounts: optional `ecosystem_apps` SQL for cookie SSO
+## 2. Worker secrets
 
-> **Optional for the current cookie SSO flow.** This SQL is for a human to review and run
-> in the Accounts Supabase project, not the Mail project. An agent must not run it. The
-> cookie sign-in flow does not need `/auth/callback`; keep this only if you want the future
-> OAuth code flow's callback URI registered.
+Only two secrets exist on Worker `mail`:
 
-```sql
-UPDATE public.ecosystem_apps
-SET redirect_uris = ARRAY[
-  'https://mail.gothwadtech.com/auth/callback',
-  'http://localhost:5173/auth/callback'
-]
-WHERE id = 'gothwad-mail';
-```
+1. **`ACCOUNTS_INTERNAL_TOKEN`** — must equal `MAIL_INTERNAL_TOKEN` on the `accounts` Worker.
+2. **`RESEND_API_KEY`** — from Resend (free plan: 3,000 emails/month).
 
-If the update changes 0 rows (the `gothwad-mail` row is missing), insert it. The Accounts
-schema seeds this row, so this is only a fallback:
-
-```sql
-INSERT INTO public.ecosystem_apps (id, name)
-VALUES ('gothwad-mail', 'Gothwad Mail')
-ON CONFLICT (id) DO NOTHING;
-```
-
-Then run the UPDATE above again.
-
-Notes:
-- `localhost:5173` is the port Vite uses by default. This project's dev server uses port
-  `3000` (`npm run dev`), so add `http://localhost:3000/auth/callback` too if you use it.
-- The cookie sign-in flow does not need `/auth/callback`. The redirect list is kept so the
-  OAuth code flow can be used later.
-
----
-
-## 3. Cloudflare: deploy the Worker
-
-Work from the repo root.
+Set both from your machine (Wrangler prompts for each value; nothing is echoed):
 
 ```bash
-npm install
-npx wrangler login            # opens a browser; do this yourself
+npm run worker:secrets
 ```
 
-### Worker name: `mail` (do not rename it)
+Or in the dashboard: **Workers & Pages → `mail` → Settings → Variables and Secrets →
+Production → Add → type Secret**.
 
-The deployed Worker is named **`mail`** in the Cloudflare dashboard, and `worker/wrangler.toml`
-now says `name = "mail"`. Keep the two the same:
-
-- Deploys from the dashboard/Git path (**Workers Builds**) go to the dashboard's Worker and
-  override the config `name` with `WRANGLER_CI_OVERRIDE_NAME`. That is why a wrong `name` in the
-  file still deployed fine — the mistake stayed hidden.
-- Local CLI commands (`npm run worker:secrets:list`, `npm run worker:deploy`) read `name` from
-  the file. If it does not match the dashboard, they hit the wrong Worker (or create a new one)
-  and the secrets look "missing".
-
-If the two ever differ again, fix the **file**, not Cloudflare: `mail` is the Worker that holds
-the secrets, the route `mail.gothwadtech.com/api/*`, and the Email Routing catch-all.
-
-### Where each value lives (read this before touching the dashboard)
-
-`worker/wrangler.toml` is the **source of truth**. `SUPABASE_URL` and every other public var
-is already filled in there, so a deploy can never bring back a placeholder:
-
-| Value | Lives in | Survives a deploy? |
-| --- | --- | --- |
-| `APP_DOMAIN`, `AUTH_HUB_URL`, `AUTH_SIGNIN_URL`, `MAIL_URL`, `SUPABASE_URL`, `DAILY_SEND_LIMIT`, `MAX_INBOUND_BYTES`, `ALLOWED_ORIGINS`, `ENVIRONMENT` | `worker/wrangler.toml` `[vars]` | Yes — the file is re-applied |
-| `ACCOUNTS_INTERNAL_TOKEN`, `SUPABASE_SERVICE_ROLE_KEY`, `RESEND_API_KEY` | Dashboard **Secrets** (type *Secret*) or `wrangler secret put` | Yes — deploys never delete secrets |
-| Anything typed in the dashboard as plain **Text** | Dashboard **Variables** | **No** — overwritten or deleted by the next deploy |
-
-`keep_vars = true` in `wrangler.toml` keeps dashboard-only variables that are **not** named in
-the file. A name that *is* in the file always takes the file's value. So: never add a secret to
-the file, and never rely on a dashboard Text variable for something the Worker needs — put it in
-the file (public) or in Secrets (private).
-
-### Set the three secrets
-
-Either way works; names must match exactly (case-sensitive). Use the exact Mail project's
-service-role key, not the Accounts project's.
-
-Dashboard: **Workers & Pages → `mail` → Settings → Variables and Secrets →
-Production → Add**, one row each, type **Secret** (click *Encrypt*):
-
-| Name | Value |
-| --- | --- |
-| `SUPABASE_SERVICE_ROLE_KEY` | Mail project's `sb_secret_...` (or legacy `eyJ...` service_role) |
-| `RESEND_API_KEY` | `re_...` (send permission only) |
-| `ACCOUNTS_INTERNAL_TOKEN` | same value as Accounts' `MAIL_INTERNAL_TOKEN` |
-
-Or from a terminal (Wrangler prompts for each value, so it never lands in shell history):
-
-```bash
-npm run worker:secrets        # sets all three, one after another
-# or one at a time:
-npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY --config worker/wrangler.toml
-npx wrangler secret put RESEND_API_KEY --config worker/wrangler.toml
-npx wrangler secret put ACCOUNTS_INTERNAL_TOKEN --config worker/wrangler.toml
-```
-
-Check which secret **names** the deployed Worker has (names only — never values):
+List only the secret *names* (safe to paste):
 
 ```bash
 npm run worker:secrets:list
 ```
 
-In the separate Accounts deployment, set `MAIL_INTERNAL_TOKEN` to the **same secret
-value** as Mail's `ACCOUNTS_INTERNAL_TOKEN`. Set it through the Accounts team's approved
-secret mechanism; never put it in either repo or paste it into chat.
+Expected: `ACCOUNTS_INTERNAL_TOKEN`, `RESEND_API_KEY`.
 
-Edit `worker/wrangler.toml` only if one of these is wrong for you:
-- `SUPABASE_URL` — already the real Mail project URL
-  (`https://womkqxzbiwgfudxbwkau.supabase.co`). Change it only if you move to another Supabase
-  project; never leave a `YOUR_PROJECT_REF` placeholder (the Worker refuses to call Supabase
-  while it is there).
-- Check `APP_DOMAIN`, `AUTH_HUB_URL`, `AUTH_SIGNIN_URL` and `MAIL_URL`.
-- `AUTH_HUB_URL` must be the Accounts host that answers `/api/*` (the Custom Domain,
-  `https://api.gothwadtech.com`). `AUTH_SIGNIN_URL` is the host users sign in on
-  (`https://accounts.gothwadtech.com`).
+`SUPABASE_SERVICE_ROLE_KEY` is gone. If the deployed Worker still shows it, delete it in the
+dashboard (leftover only; the code no longer reads it).
 
-`tests/worker-config.test.ts` (`npm run test:config`) fails the build if a required var is
-missing or blank, if `SUPABASE_URL` goes back to a placeholder, if `keep_vars = true` is
-removed, or if a secret-shaped value is committed into the file.
-
-**Dashboard text variables.** Variables set in the dashboard as plain *Text* are replaced or
-deleted by the next deploy; `keep_vars = true` only protects the ones not named in the file.
-Set `AUTH_HUB_URL` and `AUTH_SIGNIN_URL` in `wrangler.toml` (they are already there) and treat
-the dashboard as a copy, not the source:
-
-1. Cloudflare dashboard → **Workers & Pages → `mail` → Settings → Variables and
-   Secrets**.
-2. Select the **Production** environment and set both as plain **Text** (they are not
-   secrets):
-   - `AUTH_HUB_URL` = `https://api.gothwadtech.com`
-   - `AUTH_SIGNIN_URL` = `https://accounts.gothwadtech.com`
-3. Save, then redeploy so the two sources agree. If they ever disagree, the deploy wins.
-
-The Mail Worker expects `GET {AUTH_HUB_URL}/api/internal/usernames/:username`, authenticated
-with `Authorization: Bearer <ACCOUNTS_INTERNAL_TOKEN>`. It expects `200 {"exists": true}` or
-`200 {"exists": false}`; any other status or invalid JSON causes a retryable 451. Accounts'
-`main` docs did not yet document this endpoint when this Mail integration was prepared, so
-this code follows the owner's supplied contract. If Accounts ships a different documented
-path or response, align the Mail code and tests before enabling Email Routing.
-
-Check the bundle, then deploy:
+### Local secrets (never committed)
 
 ```bash
-npm run lint
-npm run test:worker
-npx wrangler deploy --dry-run --config worker/wrangler.toml
+cp worker/.dev.vars.example worker/.dev.vars
+```
+
+`worker/.dev.vars` is git-ignored. For a plain browser preview you do not even need real
+secrets — see section 6.
+
+---
+
+## 3. Accounts: register the OAuth client (optional for cookie SSO)
+
+The cookie SSO flow needs nothing in Accounts beyond the shared internal token. The
+`gothwad-mail` OAuth client is only needed for a future code flow, and those callbacks are:
+
+- `https://mail.gothwadtech.com/auth/callback`
+- `https://mail.gothwadtech.com/oauth/callback`
+
+Accounts v2 stores this in its own D1 (`ecosystem_apps`). A human may review and run the
+Accounts-side SQL; an agent must not run it. Never point Mail at the Accounts database.
+
+---
+
+## 4. Deploy the Worker
+
+```bash
 npm run worker:deploy
 ```
 
-Then confirm what the deployed Worker can actually see. `/api/health` returns booleans only —
-it never prints a key or a URL:
+Verify:
 
 ```bash
 curl -s https://mail.gothwadtech.com/api/health
-# {"ok":true,"service":"gothwad-mail-api","environment":"production",
-#  "configured":{"supabaseUrl":true,"supabaseServiceKey":true,
-#                "accountsInternalToken":true,"resendApiKey":true}}
 ```
 
-`service` is a cosmetic label in the JSON, **not** the Worker name. The Worker is `mail`.
+Expected shape (booleans and counts only — no keys, no values):
 
-Any `false` names the missing piece: `supabaseUrl` → fix `SUPABASE_URL` in `wrangler.toml`;
-`supabaseServiceKey` / `accountsInternalToken` / `resendApiKey` → that secret is not set on the
-deployed Worker (dashboard → Settings → Variables and Secrets → Production, type **Secret**).
-Re-check this after every deploy.
+```json
+{
+  "ok": true,
+  "service": "gothwad-mail",
+  "engine": "cloudflare-d1-native",
+  "environment": "production",
+  "database": { "bound": true, "ready": true, "tables": 2 },
+  "configured": { "d1Binding": true, "accountsInternalToken": true, "resendApiKey": true }
+}
+```
 
-Routes: add the production route for the API so that `mail.gothwadtech.com/api/*` goes to
-this Worker. You can add it in the dashboard (**Workers & Pages → mail →
-Settings → Domains & Routes**), or add a `[[routes]]` block to `wrangler.toml`. The zone
-`gothwadtech.com` must be on Cloudflare.
+- `database.ready: false` → the `DB` binding is missing or D1 answered an error. Check
+  `[[d1_databases]]` and the dashboard D1 status.
+- `configured.*: false` → that secret/var is missing on the deployed Worker.
+
+### Route and Email Routing (dashboard)
+
+1. **Workers & Pages → `mail` → Settings → Domains & Routes**: keep the route
+   `mail.gothwadtech.com/api/*` → `mail`.
+2. **Email Routing → Routes → Catch-all**: send `*@YOUR_DOMAIN` to Worker `mail`.
+3. Keep Email Routing off until the Accounts username endpoint is confirmed working.
+
+The Worker name must stay **`mail`**. Workers Builds overrides the config name with
+`WRANGLER_CI_OVERRIDE_NAME`, so a mismatch still deploys from Git but makes local
+`wrangler` commands target the wrong Worker. Fix the file, never the dashboard.
 
 ---
 
-## 4. Cloudflare: host the web app (static files)
+## 5. Retention: what the owner should know
 
-The Worker route only covers `/api/*`. The app's HTML, JS and CSS must be served on
-`mail.gothwadtech.com` too.
+Every mailbox has a retention setting, changeable in the app at
+**Settings → Mailbox Storage & Email Retention**:
 
-```bash
-npm run build                 # writes dist/
+| Choice | Effect |
+| --- | --- |
+| **Latest 500 emails** (default) | Keeps the newest 500 unstarred inbox/sent messages. |
+| **Latest 1,500 emails** | Same, with a larger cap. |
+| **Store All Emails** | Keeps everything until the mailbox reaches the 50 MB fair-use quota. |
+
+Non-negotiable safety rules:
+
+- **Starred emails and Drafts are never auto-deleted.**
+- **Trash empties after 30 days.**
+- When "Store All" exceeds 50 MB, the oldest unstarred **trash** goes first, then the oldest
+  unstarred mail, until the mailbox is back under quota.
+
+Why the quota exists: the free D1 database is 500 MB **shared by all mailboxes**. 50 MB of
+compressed mail is roughly 25,000 messages per user, and it stops one spam-flooded account
+from using up everyone's storage.
+
+To inspect a mailbox in the dashboard console (read-only):
+
+```sql
+SELECT COUNT(*) AS messages, COALESCE(SUM(size_bytes), 0) AS used_bytes
+FROM mail_messages WHERE to_username = 'someone';
+
+SELECT username, retention_limit, quota_bytes, updated_at FROM mail_settings;
 ```
-
-Upload `dist/` with **Cloudflare Pages** (free) and set `mail.gothwadtech.com` as its custom
-domain. The Worker route for `/api/*` must win over Pages on that host. After deploying,
-check it:
-
-```bash
-curl -i https://mail.gothwadtech.com/api/health    # JSON from the Worker, configured: all true
-curl -i https://mail.gothwadtech.com/api/session   # should return 401 with signinUrl
-```
-
-If `/api/health` returns HTML, the route is not matching. Fix the route order before you go on.
-
-### Check cookie SSO in a real browser
-
-1. Open Accounts and Mail over **HTTPS in the same browser profile**.
-2. Sign in to Accounts, then open Mail. The Mail `/api/session` request should return **200**.
-   With no Accounts session, it should return **401** with a `signinUrl`.
-3. If Mail returns to Accounts after a chooser selection, check the `/api/session` status and
-   its JSON `error` code in the browser Network panel. A repeated **401 `unauthenticated`**
-   means Mail did not get a valid shared Accounts session. A **503** means Accounts answered
-   but Mail could not read the session: `accounts_user_invalid` (profile row has no username),
-   `accounts_unexpected_response` (`AUTH_HUB_URL` is not reaching the Accounts Worker, or
-   Accounts redirected — the body's `upstreamStatus` / `upstreamContentType` say which:
-   `200 text/html` means the request hit the Pages SPA instead of the Worker), or
-   `auth_unavailable` (Accounts down / wrong `AUTH_HUB_URL`).
-4. In browser storage, inspect cookie **names and attributes only**. `gothwad_at` and
-   `gothwad_rt` should use `Domain=.APP_DOMAIN` (for example `.gothwadtech.com`), Path `/`,
-   and Secure. Never copy cookie values into chat, logs, or tickets.
-
-Accounts must set these cookies on the parent Gothwad domain for subdomain SSO. If the
-cookies are missing or host-only, correct the Accounts deployment/configuration; changing
-Mail's `next` URL will not fix that. See [docs/MAIL.md](MAIL.md#if-accounts-keeps-showing-the-chooser) for the full status table and troubleshooting details.
 
 ---
 
-## 5. Confirm Accounts, then enable Email Routing (inbound)
-
-**Do not enable Email Routing or add the catch-all until the Accounts endpoint is deployed,
-documented, and this check returns the expected 200 response.** The Accounts `main` docs did
-not yet document the endpoint when this Mail integration was prepared. The Worker currently
-follows the owner's supplied contract; if Accounts documents a different path or response,
-update and retest Mail before continuing.
-
-The Mail Worker expects
-`GET {AUTH_HUB_URL}/api/internal/usernames/:username`, with
-`Authorization: Bearer <ACCOUNTS_INTERNAL_TOKEN>`. A registered username should return
-`200 {"exists": true}`; an unknown one should return `200 {"exists": false}`. A 401 means
-the two secret values do not match or the Accounts secret is not set.
-
-Run this in your own shell after setting `AUTH_HUB_URL` to the value from
-`worker/wrangler.toml` (the Accounts Custom Domain, `https://api.gothwadtech.com` — not the
-Pages host) and `USERNAME` to a real, lowercase Accounts username. The prompt reads the
-secret without echoing or putting it in shell history:
+## 6. Local development
 
 ```bash
-read -rsp 'MAIL_INTERNAL_TOKEN: ' MAIL_INTERNAL_TOKEN; printf '\n'
-curl -i -H "Authorization: Bearer $MAIL_INTERNAL_TOKEN" \
-  "$AUTH_HUB_URL/api/internal/usernames/$USERNAME"
-unset MAIL_INTERNAL_TOKEN
-```
+npm install
+cp .env.example .env.local                      # public settings only
+cp worker/.dev.vars.example worker/.dev.vars    # local-only values
 
-Only after it returns HTTP 200 with `{"exists": true}` for the known account:
+# Option A — full preview, real SQLite, no Accounts/Resend needed:
+npm run preview:api      # Worker + local D1 on http://127.0.0.1:8787
+npm run dev              # web app on http://localhost:3000 (proxies /api)
 
-1. Dashboard → your zone → **Email → Email Routing**. Enable it. It adds the MX and TXT
-   records. If the domain already receives mail elsewhere, read the warning first.
-2. **Routing rules → Catch-all**: set the action to **Send to a Worker**, pick
-   `mail` (the Worker name from `worker/wrangler.toml`).
-3. Send a test email to `YOUR_USERNAME@gothwadtech.com` from outside. It should appear in
-   the Inbox.
-
-Bad recipient shape or unknown Accounts usernames are rejected with 550. Accounts lookup
-failures (including missing token, timeout, non-200 and bad JSON) get 451 so the sender
-retries. Oversized mail (over `MAX_INBOUND_BYTES`) is rejected with 552.
-
----
-
-## 6. Resend: outbound
-
-1. In Resend, **add the domain** `gothwadtech.com`.
-2. Add the DNS records Resend shows (SPF and DKIM, plus DMARC if you want it) in Cloudflare
-   DNS. Wait until Resend shows the domain as verified.
-3. Create an API key with **send** permission only. Put it in with
-   `npx wrangler secret put RESEND_API_KEY --config worker/wrangler.toml`.
-
-Mail goes out as `username@gothwadtech.com`. Without a verified domain, Resend will refuse.
-Check Resend's pricing page for the current free-plan limits.
-
----
-
-## 7. Local checks (optional, for development)
-
-Terminal 1 — the Worker on port 8787:
-
-```bash
+# Option B — Wrangler's own local D1:
 npm run worker:dev
-```
-
-Terminal 2 — the web app on port 3000 (Vite proxies `/api` to 8787):
-
-```bash
 npm run dev
 ```
 
-For local use, create `worker/.dev.vars` from `worker/.dev.vars.example` and fill in your own
-values there. It is git-ignored. `ENVIRONMENT=development` enables the local-only
-`DEV_AUTH_USERNAME` bypass. That bypass is ignored in production.
+`preview:api` (`tools/dev-server.mjs`) runs the real Worker against `node:sqlite` through
+`tools/local-d1.mjs`, seeds a small local mailbox, fakes Resend, and fakes Accounts only for
+cookie-based requests. Requests without any cookie use `DEV_AUTH_USERNAME`, so the browser
+preview opens straight into the inbox. Nothing leaves your machine.
 
-Tests:
+### Checks
 
 ```bash
-npm run lint          # root and worker typecheck
+npm run lint          # web app + Worker typecheck
+npm run test:config   # wrangler.toml guard (D1 binding, no secrets, no Supabase)
+npm run test:auth     # sign-in return URL logic
+npm run test:worker   # 57 Worker tests against real SQLite
+npm run test:d1       # 15 D1/compression/retention tests
+npm run test:ui       # jsdom UI smoke test (needs preview:api or worker:dev running)
 npm run build
-npm run test:auth     # sign-in redirect/return tests, no network
-npm run test:worker   # Worker tests, no network
-npm run test:ui       # jsdom smoke test; needs the Worker running and a signed-in cookie
+npx wrangler deploy --config worker/wrangler.toml --dry-run
 ```
 
-`test:ui` sends the cookie `gothwad_at=good` by default. Point it at a Worker that accepts
-that cookie, or set `MAIL_TEST_COOKIE` to a real cookie from your own browser session.
-Never paste a real session cookie into chat or into a committed file.
-
-The suite expects a local Accounts stub that answers `GET /api/auth/me` like the real one:
-
-| Cookie sent by the test | Stub answer |
-| --- | --- |
-| `gothwad_at=good` | `200 {authenticated: true, user: {username: "alice", first_name: "Alice"}}` |
-| `gothwad_at=no_username` | `200 {authenticated: true, user: {username: ""}}` |
-| anything else (no usable cookie) | `401` |
-
-The `no_username` case checks the 503 `accounts_user_invalid` screen (error message plus
-Retry, no redirect to Accounts). If the stub does not know that cookie, that one test skips
-itself and says so; the other tests still run.
+`npm test` runs all of the above except the build and the dry-run.
 
 ---
 
-## Checklist
+## 7. Removing the old Supabase project (one-time, human)
 
-- [ ] Separate Mail Supabase project created; `supabase/mail.sql` run there
-- [ ] Accounts `ecosystem_apps` SQL reviewed and run by the Accounts owner (optional for cookie SSO)
-- [ ] `ACCOUNTS_INTERNAL_TOKEN` (Mail) and `MAIL_INTERNAL_TOKEN` (Accounts) are the same secret
-- [ ] All three secrets exist on the Worker as type **Secret** (dashboard or `wrangler secret
-      put`): `SUPABASE_SERVICE_ROLE_KEY`, `RESEND_API_KEY`, `ACCOUNTS_INTERNAL_TOKEN`.
-      `npm run worker:secrets:list` lists the three names; no secret is in a file
-- [ ] `SUPABASE_URL` in `wrangler.toml` is the real Mail project URL
-      (`https://womkqxzbiwgfudxbwkau.supabase.co`) — never a `YOUR_PROJECT_REF` placeholder
-- [ ] `keep_vars = true` is still in `wrangler.toml`; `npm run test:config` passes
-- [ ] `AUTH_HUB_URL` = Accounts Custom Domain (`https://api.gothwadtech.com`) and
-      `AUTH_SIGNIN_URL` = sign-in host, set in `wrangler.toml` **and** in the deployed
-      Worker's production dashboard variables
-- [ ] Nothing the Worker needs is set only as a plain-Text dashboard variable (a deploy
-      replaces those) — it is either in `wrangler.toml` or a Secret
-- [ ] Worker deployed; `/api/health` answers from the Worker and `configured` shows four
-      `true` values
-- [ ] Route `mail.gothwadtech.com/api/*` points at the Worker
-- [ ] Web app hosted on `mail.gothwadtech.com`
-- [ ] Accounts endpoint is documented and the human curl check returns the expected 200
-- [ ] Only after the endpoint check: Email Routing enabled and catch-all sends to `mail`
-- [ ] Resend domain verified; send key set as a secret
-- [ ] Test: sign in, send to yourself, reply, star, trash
+After the D1 version is live and verified:
+
+1. Confirm `https://mail.gothwadtech.com/api/health` has **no** Supabase field and shows
+   `engine: cloudflare-d1-native`.
+2. In the Supabase dashboard, review and delete the old **Mail** project (never the Accounts
+   project).
+3. In Cloudflare, delete any leftover `SUPABASE_*` variable or secret on Worker `mail`.
+4. Remove `SUPABASE_*` from your local `.env.local` / `worker/.dev.vars`.
+5. Old mail that lived only in Supabase is not migrated automatically. If you need it, export
+   it from Supabase **before** deleting the project, then re-import with a small script.
+
+---
+
+## 8. Final checklist
+
+- [ ] D1 database `mail` exists; `wrangler.toml` has binding `DB`, `database_name = "mail"`,
+      and the real UUID `87854cea-7feb-46f3-ab99-2a2137f31105`
+- [ ] Worker `mail` has exactly two secrets: `ACCOUNTS_INTERNAL_TOKEN`, `RESEND_API_KEY`
+- [ ] `ACCOUNTS_INTERNAL_TOKEN` equals Accounts' `MAIL_INTERNAL_TOKEN`
+- [ ] `AUTH_HUB_URL = https://api.gothwadtech.com`, `AUTH_SIGNIN_URL = https://accounts.gothwadtech.com`
+- [ ] `GET /api/health` → `database.ready: true`, all three `configured` booleans `true`
+- [ ] Route `mail.gothwadtech.com/api/*` → Worker `mail`
+- [ ] Email Routing catch-all `*@YOUR_DOMAIN` → Worker `mail`
+- [ ] Sign in, open a message, send a test mail (Sent copy appears)
+- [ ] Settings → change retention to 1,500, see the storage bar update
+- [ ] Old Supabase project deleted, `SUPABASE_*` vars removed

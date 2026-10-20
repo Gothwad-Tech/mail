@@ -28,6 +28,9 @@
     "node_modules",
     "dist",
     "worker",
-    "supabase"
+    // These run against worker code (Workers types), so the Worker tsconfig
+    // checks the code they import instead of this DOM program.
+    "tests/local-d1.test.ts",
+    "tools/dev-server.mjs"
   ]
 }

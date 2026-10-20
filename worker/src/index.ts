@@ -4,9 +4,13 @@
 //   fetch()  -> REST API under /api/* (route: mail.gothwadtech.com/api/*)
 //   email()  -> inbound mail from Cloudflare Email Routing (catch-all)
 //
+// Storage is Cloudflare D1 (`env.DB`, database `mail`). Zero Supabase.
+//
 // Endpoints (all JSON, all need a signed-in Accounts session except /api/health):
-//   GET    /api/health
+//   GET    /api/health                     (public: D1 readiness + config booleans)
 //   GET    /api/session
+//   GET    /api/mail/settings              storage + retention
+//   PATCH  /api/mail/settings              { retentionLimit: 500 | 1500 | 0 }
 //   GET    /api/mail/messages?folder=inbox|starred|sent|drafts|trash&limit=&before=
 //   GET    /api/mail/messages/:id
 //   PATCH  /api/mail/messages/:id          { isRead?, isStarred?, moveToTrash? }
@@ -16,11 +20,18 @@
 //   POST   /api/mail/send                  { to, cc?, bcc?, subject, body, draftId? }
 // =============================================================================
 
-import { readConfig, isSupabaseConfigured, configStatus, type Config, type Env } from './config';
+import { readConfig, configStatus, type Config, type Env } from './config';
 import { Db } from './db';
 import { corsHeaders, errorResponse, HttpError, json, assertSafeWrite, readJson } from './http';
 import * as mail from './mail';
 import { handleInbound } from './inbound';
+import {
+  enforceRetention,
+  getSettings,
+  isRetentionLimit,
+  mailboxStats,
+  updateRetentionLimit,
+} from './retention';
 import { resolveSession, signinBaseUrl, deriveEmail, takeUpstreamCookies, type Session } from './session';
 import { sendViaResend } from './resend';
 
@@ -36,13 +47,29 @@ async function requireSession(request: Request, config: Config): Promise<Session
   return session;
 }
 
+/** Settings + live usage in one response, so the UI needs a single call. */
+async function settingsPayload(env: Env, username: string) {
+  const db = await Db.from(env);
+  const settings = await getSettings(db, username);
+  const stats = await mailboxStats(db, username, settings.quotaBytes);
+  return {
+    retentionLimit: settings.retentionLimit,
+    storageQuotaBytes: stats.storageQuotaBytes,
+    storageUsedBytes: stats.storageUsedBytes,
+    totalMessages: stats.totalMessages,
+    starredMessages: stats.starredMessages,
+    updatedAt: settings.updatedAt,
+  };
+}
+
 async function handleSession(request: Request, env: Env, config: Config): Promise<Response> {
   const session = await requireSession(request, config);
 
   // The remaining-today count is nice to have. If the DB is down, the session still works.
   let sendRemainingToday: number | null = null;
   try {
-    const sent = await mail.countSentToday(Db.from(env, config), session.username);
+    const db = await Db.from(env);
+    const sent = await mail.countSentToday(db, session.username);
     sendRemainingToday = Math.max(config.dailySendLimit - sent, 0);
   } catch {
     sendRemainingToday = null;
@@ -74,11 +101,8 @@ async function handleSend(request: Request, env: Env, config: Config, session: S
   if (!env.RESEND_API_KEY) {
     throw new HttpError(503, 'sending_not_configured', 'Sending is not set up yet. Ask the admin to add the Resend key.');
   }
-  if (!isSupabaseConfigured(config)) {
-    throw new HttpError(503, 'not_configured', 'Database is not configured for this Worker.');
-  }
 
-  const db = Db.from(env, config);
+  const db = await Db.from(env);
   const sentToday = await mail.countSentToday(db, session.username);
   if (sentToday >= config.dailySendLimit) {
     throw new HttpError(429, 'daily_limit', `Daily send limit reached (${config.dailySendLimit} per day).`, {
@@ -88,6 +112,7 @@ async function handleSend(request: Request, env: Env, config: Config, session: S
   }
 
   const from = deriveEmail(session.username, config.appDomain);
+  const html = mail.textToHtml(text);
   const providerId = await sendViaResend(env.RESEND_API_KEY, {
     from,
     to,
@@ -95,32 +120,28 @@ async function handleSend(request: Request, env: Env, config: Config, session: S
     bcc,
     subject,
     text,
-    html: mail.textToHtml(text),
+    html,
   });
 
   // The mail has left at this point. If saving the copy fails, we still tell
   // the user it was sent, and log the failure (no body content in logs).
   let savedId: string | null = null;
   try {
-    const row = await db.insert<mail.MailRow>('mail_messages', {
-      to_username: session.username,
-      user_id: null,
+    const stored = await mail.insertMessage(db, {
+      username: session.username,
       folder: 'sent',
-      from_email: from,
-      from_name: session.name,
-      to_email: to.join(', '),
-      cc_emails: cc,
-      bcc_emails: bcc,
+      fromEmail: from,
+      fromName: session.name,
+      to,
+      cc,
+      bcc,
       subject,
-      snippet: mail.makeSnippet(text),
-      body_text: text,
-      body_html: mail.textToHtml(text),
-      attachments: [],
-      is_read: true,
-      is_starred: false,
-      provider_id: providerId || null,
+      text,
+      html,
+      isRead: true,
+      providerId: providerId || null,
     });
-    savedId = row.id;
+    savedId = stored.id;
   } catch {
     console.error('sent_copy_not_saved');
   }
@@ -131,6 +152,13 @@ async function handleSend(request: Request, env: Env, config: Config, session: S
     } catch {
       console.error('draft_cleanup_failed');
     }
+  }
+
+  // Keep the mailbox inside its retention cap right away.
+  try {
+    await enforceRetention(db, session.username);
+  } catch {
+    console.error('send_retention_failed');
   }
 
   return json(
@@ -144,6 +172,21 @@ async function handleSend(request: Request, env: Env, config: Config, session: S
   );
 }
 
+/** Live D1 readiness for /api/health. Never throws: a broken DB is a status. */
+async function d1Readiness(env: Env): Promise<{ bound: boolean; ready: boolean; tables: number }> {
+  if (!env.DB) return { bound: false, ready: false, tables: 0 };
+  try {
+    const db = await Db.from(env);
+    const row = await db.first<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN ('mail_messages', 'mail_settings')"
+    );
+    const tables = Number(row?.n ?? 0);
+    return { bound: true, ready: tables === 2, tables };
+  } catch {
+    return { bound: true, ready: false, tables: 0 };
+  }
+}
+
 async function route(request: Request, env: Env, config: Config): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/+$/, '') || '/';
@@ -154,12 +197,15 @@ async function route(request: Request, env: Env, config: Config): Promise<Respon
   }
 
   if (path === '/api/health' && method === 'GET') {
-    // Booleans only: lets a human confirm after a deploy that nothing was wiped,
-    // without ever printing a key. See configStatus().
+    // Booleans and counts only: lets a human confirm after a deploy that the
+    // D1 binding works and no secret was wiped, without ever printing a key.
+    const database = await d1Readiness(env);
     return json({
       ok: true,
-      service: 'gothwad-mail-api',
+      service: 'gothwad-mail',
+      engine: 'cloudflare-d1-native',
       environment: config.isProduction ? 'production' : 'development',
+      database,
       configured: configStatus(env, config),
     });
   }
@@ -168,11 +214,38 @@ async function route(request: Request, env: Env, config: Config): Promise<Respon
     return handleSession(request, env, config);
   }
 
+  if (path === '/api/mail/settings' && method === 'GET') {
+    const session = await requireSession(request, config);
+    return json(await settingsPayload(env, session.username));
+  }
+
+  if (path === '/api/mail/settings' && method === 'PATCH') {
+    const session = await requireSession(request, config);
+    assertSafeWrite(request, config);
+    const body = await readJson<Record<string, unknown>>(request);
+    if (!isRetentionLimit(body.retentionLimit)) {
+      throw new HttpError(400, 'bad_retention_limit', 'retentionLimit must be 500, 1500 or 0 (store all).');
+    }
+
+    const db = await Db.from(env);
+    await updateRetentionLimit(db, session.username, body.retentionLimit);
+    // Lowering the limit must take effect immediately, not at the next inbound
+    // mail. Starred messages and drafts are never touched (see retention.ts).
+    const cleanup = await enforceRetention(db, session.username);
+
+    return json({ ...(await settingsPayload(env, session.username)), cleanup });
+  }
+
   if (path === '/api/mail/messages' && method === 'GET') {
     const session = await requireSession(request, config);
     const opts = mail.parseListOptions(url);
-    const messages = await mail.listMessages(Db.from(env, config), session.username, opts);
-    return json({ messages, folder: opts.folder, nextBefore: messages.length === opts.limit ? messages[messages.length - 1].receivedAt : null });
+    const db = await Db.from(env);
+    const messages = await mail.listMessages(db, session.username, opts);
+    return json({
+      messages,
+      folder: opts.folder,
+      nextBefore: messages.length === opts.limit ? messages[messages.length - 1].receivedAt : null,
+    });
   }
 
   if (path === '/api/mail/send' && method === 'POST') {
@@ -185,7 +258,7 @@ async function route(request: Request, env: Env, config: Config): Promise<Respon
     assertSafeWrite(request, config);
     const draft = mail.parseDraft(await readJson(request, 512 * 1024));
     const message = await mail.saveDraft(
-      Db.from(env, config),
+      await Db.from(env),
       session.username,
       session.email,
       session.name,
@@ -209,26 +282,26 @@ async function route(request: Request, env: Env, config: Config): Promise<Respon
     const session = await requireSession(request, config);
 
     if (kind === 'messages' && method === 'GET') {
-      const message = await mail.getMessage(Db.from(env, config), session.username, id);
+      const message = await mail.getMessage(await Db.from(env), session.username, id);
       return json({ message });
     }
 
     if (kind === 'messages' && method === 'PATCH') {
       assertSafeWrite(request, config);
       const patch = mail.parsePatch(await readJson(request));
-      const message = await mail.patchMessage(Db.from(env, config), session.username, id, patch);
+      const message = await mail.patchMessage(await Db.from(env), session.username, id, patch);
       return json({ message });
     }
 
     if (kind === 'messages' && method === 'DELETE') {
       assertSafeWrite(request, config);
-      await mail.deleteTrashed(Db.from(env, config), session.username, id);
+      await mail.deleteTrashed(await Db.from(env), session.username, id);
       return json({ ok: true });
     }
 
     if (kind === 'drafts' && method === 'DELETE') {
       assertSafeWrite(request, config);
-      await mail.deleteDraft(Db.from(env, config), session.username, id);
+      await mail.deleteDraft(await Db.from(env), session.username, id);
       return json({ ok: true });
     }
   }

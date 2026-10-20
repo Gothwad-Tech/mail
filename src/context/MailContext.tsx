@@ -1,6 +1,13 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { EmailMessage, EmailFolder, ComposeData, UserProfile } from '../types/email';
-import { ApiMessage, ApiError, mailApi, SessionUser } from '../services/mailApi';
+import {
+  ApiMessage,
+  ApiError,
+  mailApi,
+  SessionUser,
+  MailboxSettings,
+  RetentionLimit,
+} from '../services/mailApi';
 
 export interface SearchFilterOptions {
   from: string;
@@ -83,6 +90,13 @@ interface MailContextType {
   setIsSearchFilterOpen: (open: boolean) => void;
   splitView: 'none' | 'vertical' | 'horizontal';
   setSplitView: (mode: 'none' | 'vertical' | 'horizontal') => void;
+
+  // Mailbox storage + retention (Cloudflare D1)
+  mailboxSettings: MailboxSettings | null;
+  isLoadingSettings: boolean;
+  settingsError: string | null;
+  refreshSettings: () => void;
+  saveRetentionLimit: (limit: RetentionLimit) => Promise<boolean>;
 
   // Signed-in user (from the Accounts session, via the Worker)
   currentUser: UserProfile;
@@ -236,6 +250,11 @@ export const MailProvider: React.FC<{
 
   const dismissToast = useCallback(() => setToast(null), []);
 
+  // ----- Mailbox settings (retention + storage) ------------------------------
+  const [mailboxSettings, setMailboxSettings] = useState<MailboxSettings | null>(null);
+  const [isLoadingSettings, setIsLoadingSettings] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+
   // ----- Compose state -------------------------------------------------------
   const [composeState, setComposeState] = useState<ComposeState>({
     isOpen: false,
@@ -335,6 +354,53 @@ export const MailProvider: React.FC<{
       setIsLoadingEmails(false);
     }
   }, [emails, isLoadingEmails, currentFolder, showToast]);
+
+  const refreshSettings = useCallback(async () => {
+    setIsLoadingSettings(true);
+    setSettingsError(null);
+    try {
+      setMailboxSettings(await mailApi.getSettings());
+    } catch (err) {
+      setSettingsError(errorText(err));
+    } finally {
+      setIsLoadingSettings(false);
+    }
+  }, []);
+
+  // Load usage the first time the Settings panel opens, and again on demand.
+  useEffect(() => {
+    if (isSettingsModalOpen) void refreshSettings();
+  }, [isSettingsModalOpen, refreshSettings]);
+
+  const saveRetentionLimit = useCallback(
+    async (limit: RetentionLimit): Promise<boolean> => {
+      setIsLoadingSettings(true);
+      setSettingsError(null);
+      try {
+        const next = await mailApi.updateSettings(limit);
+        setMailboxSettings(next);
+        const { trimmed, trashPurged } = next.cleanup;
+        if (trimmed > 0 || trashPurged > 0) {
+          showToast(
+            `Retention updated: ${trimmed} old email${trimmed === 1 ? '' : 's'} removed` +
+              (trashPurged > 0 ? `, ${trashPurged} from Trash` : '') +
+              '. Starred emails and drafts were kept.'
+          );
+        } else {
+          showToast('Retention updated.');
+        }
+        // Messages may have been trimmed, so refresh the list that is on screen.
+        void loadFolder(currentFolder);
+        return true;
+      } catch (err) {
+        setSettingsError(errorText(err));
+        return false;
+      } finally {
+        setIsLoadingSettings(false);
+      }
+    },
+    [currentFolder, loadFolder, showToast]
+  );
 
   const discardCompose = useCallback(() => {
     const id = draftIdRef.current;
@@ -636,6 +702,11 @@ export const MailProvider: React.FC<{
         setIsSearchFilterOpen,
         splitView,
         setSplitView,
+        mailboxSettings,
+        isLoadingSettings,
+        settingsError,
+        refreshSettings,
+        saveRetentionLimit,
         currentUser,
         sendRemainingToday,
         dailySendLimit,

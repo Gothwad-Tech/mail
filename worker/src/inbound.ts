@@ -7,7 +7,8 @@
 //   -> domain check, size check, and username shape check
 //   -> ask Accounts whether the username exists
 //   -> parse MIME (postal-mime)
-//   -> insert one row into Mail's public.mail_messages (folder = 'inbox')
+//   -> gzip the bodies and insert one row into D1 mail_messages (folder = 'inbox')
+//   -> run retention so a flooded mailbox trims itself right away
 //
 // Why the Accounts API: Mail has its own database and must not read Accounts'
 // profiles table. The email arrives from the internet, so this Worker decides
@@ -16,16 +17,22 @@
 // Free-tier guards:
 //   - Messages above MAX_INBOUND_BYTES are rejected (SMTP 552).
 //   - Attachment BYTES are never stored. We keep only name/type/size metadata.
-//   - Body text and HTML are truncated to fixed limits.
+//   - Body text and HTML are truncated to fixed limits BEFORE gzip, so no row
+//     can ever approach Cloudflare D1's 2 MB row ceiling.
 // =============================================================================
 
 import PostalMime from 'postal-mime';
 import type { Config, Env } from './config';
 import { Db } from './db';
-import { makeSnippet, AttachmentMeta, MAX_STORED_HTML_CHARS } from './mail';
+import {
+  insertMessage,
+  MAX_BODY_CHARS as MAX_STORED_TEXT_CHARS,
+  MAX_STORED_HTML_CHARS,
+  type AttachmentMeta,
+} from './mail';
+import { enforceRetention } from './retention';
 import { normalizeUsername } from './session';
 
-const MAX_STORED_TEXT_CHARS = 200_000;
 const MAX_SUBJECT_CHARS = 998;
 
 function truncate(value: string, max: number): string {
@@ -149,20 +156,28 @@ export async function handleInbound(message: ForwardableEmailMessage, config: Co
   const bodyHtml = parsed.html ? truncate(parsed.html, MAX_STORED_HTML_CHARS) : null;
   const fromEmail = (parsed.from?.address || message.from || '').toLowerCase();
 
-  await Db.from(env, config).insert('mail_messages', {
-    to_username: username,
-    user_id: null, // Mail does not map usernames to Accounts auth user ids
+  const db = await Db.from(env);
+  await insertMessage(db, {
+    username,
     folder: 'inbox',
-    from_email: fromEmail || 'unknown@invalid',
-    from_name: parsed.from?.name || null,
-    to_email: message.to.toLowerCase(),
+    fromEmail: fromEmail || 'unknown@invalid',
+    fromName: parsed.from?.name || null,
+    to: [message.to.toLowerCase()],
+    toEmail: message.to.toLowerCase(),
     subject: truncate(parsed.subject || '(no subject)', MAX_SUBJECT_CHARS),
-    snippet: makeSnippet(bodyText || (bodyHtml ? '(HTML message)' : '')),
-    body_text: bodyText,
-    body_html: bodyHtml,
+    text: bodyText || (bodyHtml ? '(HTML message)' : ''),
+    html: bodyHtml,
     attachments,
-    is_read: false,
-    is_starred: false,
-    provider_id: message.headers.get('message-id') || null,
+    isRead: false,
+    isStarred: false,
+    providerId: message.headers.get('message-id') || null,
   });
+
+  // Retention runs inline: a mailbox is never over its cap after this returns.
+  // A cleanup failure must not reject a delivered message, so it is logged only.
+  try {
+    await enforceRetention(db, username);
+  } catch {
+    console.error('inbound_retention_failed');
+  }
 }

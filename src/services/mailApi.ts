@@ -6,7 +6,7 @@
 // Either way the browser stays on one origin, so the session cookie is sent
 // and no CORS setup is needed.
 //
-// The browser never has Supabase or Resend keys. Only this API is called.
+// The browser never has a Resend key and never sees D1. Only this API is called.
 // =============================================================================
 
 import type { ComposeData, EmailFolder } from '../types/email';
@@ -50,6 +50,24 @@ export interface ApiMessage {
   attachments: Array<{ name: string; type: string; size: number }>;
   bodyText?: string;
   bodyHtml?: string | null;
+}
+
+export type RetentionLimit = 500 | 1500 | 0;
+
+export interface MailboxSettings {
+  retentionLimit: RetentionLimit;
+  /** Bytes actually stored (compressed bodies) for this mailbox. */
+  storageUsedBytes: number;
+  /** Fair-use cap, 50 MB by default. */
+  storageQuotaBytes: number;
+  totalMessages: number;
+  starredMessages: number;
+  updatedAt?: string;
+}
+
+export interface RetentionCleanup {
+  trashPurged: number;
+  trimmed: number;
 }
 
 export class ApiError extends Error {
@@ -116,6 +134,14 @@ export const mailApi = {
     request<{ message: ApiMessage }>('/mail/drafts', { method: 'POST', body: draft }),
 
   deleteDraft: (id: string) => request<{ ok: true }>(`/mail/drafts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  getSettings: () => request<MailboxSettings>('/mail/settings'),
+
+  updateSettings: (retentionLimit: RetentionLimit) =>
+    request<MailboxSettings & { cleanup: RetentionCleanup }>('/mail/settings', {
+      method: 'PATCH',
+      body: { retentionLimit },
+    }),
 
   send: (payload: { to: string[]; cc: string[]; bcc: string[]; subject: string; body: string; draftId?: string }) =>
     request<{ id: string | null; sent: true; saved: boolean; remainingToday: number }>('/mail/send', {

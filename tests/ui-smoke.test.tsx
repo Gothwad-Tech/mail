@@ -129,6 +129,42 @@ test('signed-in user sees the inbox, can open a message safely, and can open com
   }
 });
 
+test('Settings shows the mailbox storage card and the retention selector works', async () => {
+  activeCookie = GOOD_COOKIE;
+  const root = createRoot(document.getElementById('root')!);
+  await act(async () => {
+    root.render(createElement(App));
+  });
+  await waitFor(() => text().includes('Invoice for October'), 'inbox loaded');
+
+  const settingsBtn = document.querySelector('button[aria-label="Settings"]') as HTMLButtonElement | null;
+  assert.ok(settingsBtn, 'Settings button exists');
+  await act(async () => {
+    settingsBtn.click();
+  });
+  await waitFor(() => text().includes('Mailbox Storage & Email Retention'), 'storage card');
+
+  // Live usage comes from GET /api/mail/settings (real SQLite behind the Worker).
+  await waitFor(() => /Used .* of .* MB/.test(text()), 'storage usage line');
+  assert.ok(text().includes('Latest 500 emails (Default)'), 'default retention option');
+  assert.ok(text().includes('Store All Emails'), 'store all option');
+  assert.ok(text().includes('Starred emails & Drafts are never auto-deleted'), 'safety badge');
+
+  const option = [...document.querySelectorAll('[role="radio"]')].find((el) =>
+    el.textContent?.includes('Latest 1,500 emails')
+  ) as HTMLElement | undefined;
+  assert.ok(option, 'retention option is clickable');
+  await act(async () => {
+    option.click();
+  });
+  await waitFor(() => option.getAttribute('aria-checked') === 'true', 'retention saved to the Worker');
+
+  await act(async () => {
+    root.unmount();
+  });
+  document.body.innerHTML = '<div id="root"></div>';
+});
+
 test('signed-out browser is sent to Accounts sign-in (with next=) and never sees mail', async () => {
   activeCookie = 'unrelated=1';
   const root = createRoot(document.getElementById('root')!);
