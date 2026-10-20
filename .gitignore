@@ -17,3 +17,6 @@ worker/.dev.vars
 *.sqlite-shm
 *.sqlite-wal
 worker/.dev-d1.sqlite
+
+# Vite PWA dev build output (regenerated on every dev run)
+dev-dist

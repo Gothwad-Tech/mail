@@ -89,3 +89,13 @@
 | Instant switch | **Done** | Caches cleared, provider keyed by username, session re-read without a reload. |
 | Local + automated verification | **Done** | Two-account dev stub; 14 worker tests + 1 jsdom switch test (108 total). |
 | Live two-account check | **Pending** | Needs the Accounts PR deployed. |
+
+## Code hygiene — file size policy
+
+| Rule | Value |
+| --- | --- |
+| Target lines per source file | **≤ 500** |
+| Hard maximum | **800** (test fails above it) |
+| Enforcement | `npm run check:sizes`, first step of `npm test` |
+| Already split | `worker/test/*` (11 files), `src/context/*` (7 files), `worker/src/mail-*` (4 files) |
+| Largest file now | `src/context/useMailbox.ts` (312) |

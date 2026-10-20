@@ -72,9 +72,27 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
 11d. **Keep the shell responsive.** Use `100dvh` + flex `min-h-0` (no magic pixel heights),
    keep tap targets >= 44px, and keep `SettingsModal`/`ComposeModal` lazy-loaded so the first
    paint stays small.
-12. **Talk to the user in simple English or Hinglish.**
-13. **Update `TASK.md` every session.**
-14. **Never delete `AGENTS.md` once created.**
+12. **File size limit — a hard rule, not a preference.**
+    - Target: every `.ts` / `.tsx` / `.mjs` source file stays **at or below 500 lines**.
+    - Absolute maximum: **800 lines**. Nothing may exceed it.
+    - If a file crosses 500, split it **in the same session** — never "later".
+    - When you find an existing file over 500, split it as part of your change.
+    - Splitting must be **behaviour-preserving**: same exported names, same logic, same
+      error messages, same user-visible text, same tests passing. Move code; do not rewrite
+      it in the same commit as the split.
+    - Split by responsibility, not by line count: read path / write path / validation,
+      or one hook per concern. A file with two unrelated exports is already a signal.
+    - Exempt: docs (`.md`), `package-lock.json`, CSS/JSON, and generated output.
+    - Enforced by `npm run check:sizes` (fails over 800, warns over 500). It runs first
+      inside `npm test`, so a regression cannot merge quietly.
+    - Current split for reference: `MailContext.tsx` (provider composition) +
+      `mailContextTypes.ts`, `mailHelpers.ts`, `useMailbox.ts`, `useCompose.ts`,
+      `useMailboxSettings.ts`, `useAccountsSwitcher.ts`; and `worker/src/mail.ts`
+      (barrel) + `mail-types.ts` / `mail-read.ts` / `mail-write.ts`; Worker tests are one
+      file per area over `worker/test/helpers.ts`.
+13. **Talk to the user in simple English or Hinglish.**
+14. **Update `TASK.md` every session.**
+15. **Never delete `AGENTS.md` once created.**
 
 ## Working rules
 
@@ -82,6 +100,7 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
 - Check the worker with `worker/tsconfig.json`. Do **not** run the root tsconfig over
   `worker/` (the DOM and workers libs clash). The root tsconfig excludes `worker/`.
 - Before you say something works, run the checks:
+  - `npm run check:sizes` (no source file over 800 lines; splits over 500)
   - `npm run lint` (root and worker typecheck)
   - `npm run build`
   - `npm run test:worker` (Worker tests on real SQLite, no network)
