@@ -174,11 +174,24 @@ not seeing this config. `worker/wrangler.toml` is not at the repo root, and the 
 `npx wrangler preview` looks for `wrangler.toml` in the directory it runs in. One-time
 dashboard fix (owner only):
 
-> Workers & Pages → `mail` → **Settings → Build → Preview command** →
-> `npx wrangler preview --config worker/wrangler.toml`
->
-> (If there is no Preview command field, set **Root directory** to `worker` instead, so
-> `wrangler.toml` is found automatically.)
+> Workers & Pages → `mail` → **Settings → Builds** → **Previews** tab
+> → **Preview command**: `npx wrangler preview --config worker/wrangler.toml`
+> → **Root directory**: `/` (keep it at the repo root)
+
+### Do not change the Production Root directory
+
+Both build commands rely on the repo root:
+
+| Setting | Value (Production **and** Previews) | Why |
+| --- | --- | --- |
+| Root directory | `/` | `package.json`, `node_modules` and the `worker/` folder live here. |
+| Build command | `npm ci` | Installs from the root `package.json`. |
+| Deploy command (Production) | `npm run worker:deploy` | Runs `wrangler deploy --config worker/wrangler.toml`; that path is relative to the root. |
+| Preview command (Previews) | `npx wrangler preview --config worker/wrangler.toml` | Same reason: the config lives in `worker/`. |
+
+Setting **Root directory = `worker`** looks tempting, but it breaks production: `npm ci` would
+have no `package.json`, and `--config worker/wrangler.toml` would resolve to
+`worker/worker/wrangler.toml`. Keep the root at `/` and pass `--config` instead.
 
 This was already red on the previously merged PR #7, so it is a repo setting, not a code
 problem: the production branch (`main`) runs `npx wrangler deploy` and stays green.
