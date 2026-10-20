@@ -2,6 +2,45 @@
 
 Updated every session. Newest first.
 
+## 2026-10-20 — Clarify the Builds settings: keep Root directory `/`, set the Preview command
+
+**Report:** while fixing the red PR check, the owner changed the **Production** Root directory
+from `/` to `worker`. The dashboard's Previews tab does have a **Preview command** field, so no
+file move is needed.
+
+**Correction captured in `docs/SETUP.md`:**
+
+- Root directory stays **`/`** for Production **and** Previews. `package.json`, `node_modules`
+  and `worker/` all live at the root, and `--config worker/wrangler.toml` is relative to it.
+  Root = `worker` would break production twice: `npm ci` finds no `package.json`, and the
+  config path would resolve to `worker/worker/wrangler.toml`.
+- Production: Build command `npm ci`, Deploy command `npm run worker:deploy`.
+- Previews: Build command `npm ci`, **Preview command**
+  `npx wrangler preview --config worker/wrangler.toml`.
+- Then retry the failed build. The `previews = {}` block in `worker/wrangler.toml` is what
+  `wrangler preview` needs once it can see the config.
+
+No application code changed in this entry.
+
+---
+
+## 2026-10-20 — Fix red "Workers Builds: mail" check (missing `previews` block)
+
+**Root cause:** Workers Builds runs `npx wrangler deploy` on `main`, but
+`npx wrangler preview` on non-production branches. Since Worker Previews shipped,
+`wrangler preview` refuses to start without a `previews` block, so every PR build failed
+before compiling anything (the same check was already red on PR #7, which still merged).
+
+**Done (merged in PR #8):** `previews = {}` in `worker/wrangler.toml`, kept empty on purpose so
+a Preview has no D1 binding and no secrets and can never touch production mail. Guarded by
+`tests/worker-config.test.ts`; documented in `AGENTS.md` and `docs/SETUP.md`.
+
+**Verified:** `npx wrangler preview --config worker/wrangler.toml` gets past the config check
+and stops only at the expected local-only `CLOUDFLARE_API_TOKEN` error, which Workers Builds
+provides.
+
+---
+
 ## 2026-10-20 — 100% Cloudflare D1 migration + smart retention & gzip (Supabase removed)
 
 **Owner request:** remove every Supabase dependency from Mail and move it to 100% native
