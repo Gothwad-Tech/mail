@@ -9,10 +9,12 @@ Gothwad Mail is a webmail app for `username@APP_DOMAIN` addresses.
 - **Frontend**: Vite + React + Tailwind (`src/`). Calls same-origin `/api`. Has no secrets.
 - **Mail Worker** (`worker/`): Cloudflare Worker. Serves the REST API under `/api/*` and
   handles inbound email (Email Routing `email()` handler). It is the only thing that
-  talks to Supabase (service key) and Resend (API key).
-- **Database**: Supabase in a **separate Gothwad Mail project**. Schema in
-  `supabase/mail.sql`. Run by a human in the SQL editor. Never run by an agent. Mail does
-  not read Accounts' `public.profiles`; `user_id` stays null.
+  talks to D1 (the `DB` binding) and Resend (API key).
+- **Database**: **Cloudflare D1**, database **`mail`**, binding **`DB`** (`wrangler.toml`).
+  Zero Supabase. The Worker bootstraps the schema itself on the first request
+  (`worker/src/db.ts`); `sql/01_mail_schema.sql` is the documented copy and
+  `sql/00_d1_console_bootstrap.sql` the comment-free console copy. Never put `PRAGMA` in D1
+  SQL. Mail does not read the Accounts `accounts` database.
 - **Identity**: Gothwad Accounts. Mail never has its own login. It asks Accounts who is
   signed in (`/api/auth/me` with the browser's cookies, or `/api/oauth/userinfo` for bearer
   tokens). Inbound mailbox checks also use an Accounts endpoint; Mail never reads Accounts'
@@ -31,20 +33,23 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
    contract before Accounts documents it, keep production traffic disabled until the docs
    and deployed behavior are confirmed. Do not merge Mail into Accounts.
 2. **Never hardcode the domain in logic.** Use env: `APP_DOMAIN`, `AUTH_HUB_URL`,
-   `AUTH_SIGNIN_URL`, `MAIL_URL`, `SUPABASE_URL`. Fallback defaults may contain
-   `gothwadtech.com`.
+   `AUTH_SIGNIN_URL`, `MAIL_URL`. The D1 database id and name are not secrets and live in
+   `wrangler.toml`. Fallback defaults may contain `gothwadtech.com`.
 3. **Never commit real keys.** `.env.example` and `wrangler` examples hold placeholders
-   only. Secrets go in with `wrangler secret put` (or `npm run worker:secrets`) or the
-   dashboard as type **Secret**. Never ask the user to paste a live key or password into
-   chat. The one public value that lives in `wrangler.toml` is `SUPABASE_URL` — a project
-   URL is not a secret (it ships in every Supabase client).
-4. **Browser never calls Supabase or Resend.** Mail is sent only by the Worker.
-   The Supabase `sb_secret_` key goes in the `apikey` header only, never `Authorization`
-   (except legacy `eyJ` service-role keys, which need both).
+   only. Only two Worker secrets exist: `ACCOUNTS_INTERNAL_TOKEN` and `RESEND_API_KEY`. They
+   go in with `wrangler secret put` (or `npm run worker:secrets`) or the dashboard as type
+   **Secret**. Never ask the user to paste a live key or password into chat.
+4. **Browser never calls D1 or Resend.** The browser only calls same-origin `/api/*`. D1 is
+   reached solely through the Worker's `DB` binding; there is no database URL or key to leak.
 5. **No demo data in the production build.** No fake names, no mock threads.
    The only data is what the Worker returns.
 6. **Free tier only. Zero paid budget.** No paid services, no paid add-ons.
 7. **No polling loops.** Refresh is manual (or on user action).
+7b. **Never auto-delete starred mail or drafts.** Retention (`worker/src/retention.ts`) may
+   trim unstarred inbox/sent overflow, purge Trash after 30 days, and enforce the per-mailbox
+   quota, but `is_starred = 1` and `folder = 'drafts'` are always excluded. Keep it tested.
+7c. **Never store raw bodies.** Bodies go through `compressBodies()` into `body_gzip`, and
+   `size_bytes` is always set, because the quota depends on it. Cap text/HTML before gzip.
 8. **Attachments: tiny only (under 200 KB total), otherwise skip with a note.**
    Today: attachment bytes are never stored. Only name, type and size are kept, and the UI
    says so. Storing tiny files is a future decision (see `PLAN.md`).
@@ -63,11 +68,12 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
 - Before you say something works, run the checks:
   - `npm run lint` (root and worker typecheck)
   - `npm run build`
-  - `npm run test:worker` (Worker tests, no network)
+  - `npm run test:worker` (Worker tests on real SQLite, no network)
+  - `npm run test:d1` (D1 adapter, gzip and retention tests on real SQLite)
   - `npm run test:auth` (sign-in return URL tests, no network)
   - `npm run test:config` (after touching `worker/wrangler.toml`; config guard)
-  - `npm run test:ui` (jsdom smoke test; needs `npm run worker:dev` plus a signed-in
-    cookie. See `docs/SETUP.md`, "Local checks")
+  - `npm run test:ui` (jsdom smoke test; needs `npm run preview:api` or `npm run worker:dev`
+    running. See `docs/SETUP.md`, "Local development")
 - `wrangler deploy --dry-run` should bundle cleanly before any deploy.
 - Read big files in small `sed -n` ranges. Do not `cat` a huge file in one go.
 - Local secrets go in `worker/.dev.vars` (git-ignored). Never commit it.
@@ -76,8 +82,18 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
 
 ## Known things not to retry
 
-- Revoking the `authenticated` role on `mail_messages` made the RLS policy inert. Only `anon`
-  is revoked now.
+- Do **not** reintroduce Supabase, PostgREST HTTP calls, `SUPABASE_URL` or a database service
+  key. Storage is D1 through the `DB` binding; `npm run test:config` fails on any Supabase
+  setting in `wrangler.toml`.
+- Do **not** run `PRAGMA` in D1 SQL (remote D1 rejects it with `SQLITE_AUTH`), and do not drop
+  `sqlite_sequence`/manual migration steps: the schema bootstrap is idempotent by design.
+- Do **not** make retention delete starred mail or drafts, and do not make it a cron-only job.
+  It must run inline on inbound/send/settings change because there is no always-on scheduler.
+- Do **not** store bodies as plain `body_text`/`body_html` for new rows. Use
+  `insertMessage()`/`saveDraft()`, which gzip and set `size_bytes`; a missing `size_bytes`
+  breaks the quota.
+- Do **not** "fix" a test by mocking the database. Tests use `tools/local-d1.mjs` on purpose;
+  a mock would not catch SQLite constraint or SQL mistakes.
 - Draft autosave duplicated drafts when the draft id was read from a stale closure. Fixed
   with refs and a single-flight flush in `MailContext.tsx`. Keep it that way.
 - `decodeURIComponent` throws on bad `%` input. It is wrapped and returns 400.
@@ -88,11 +104,16 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
   expired session and bounced users through the chooser. Mail returns 401 only for an Accounts
   401/403; everything else is a 503 with its own code (`accounts_user_invalid`,
   `accounts_unexpected_response`, `auth_unavailable`). See the table in `docs/MAIL.md`.
-- Do **not** remove `keep_vars = true` from `worker/wrangler.toml`, and do **not** leave
-  `SUPABASE_URL` as a `YOUR_PROJECT_REF` placeholder. Plain-text dashboard variables are
-  replaced or deleted by every deploy; secrets are not. The file is the source of truth for
-  the vars it names. `npm run test:config` (`tests/worker-config.test.ts`) fails on a blank
-  var, a placeholder URL, a missing `keep_vars`, or a secret-shaped value in the file.
+- Do **not** remove `keep_vars = true` from `worker/wrangler.toml`, and do **not** leave the
+  D1 `database_id` as a placeholder. Plain-text dashboard variables are replaced or deleted by
+  every deploy; secrets are not. The file is the source of truth for the vars it names.
+  `npm run test:config` (`tests/worker-config.test.ts`) fails on a blank var, a missing
+  `keep_vars`, a wrong/missing D1 binding, any Supabase setting, or a secret-shaped value.
+- Do **not** delete `previews = {}` from `worker/wrangler.toml`. Workers Builds runs
+  `npx wrangler preview` for every non-production branch, and that command refuses to start
+  without a `previews` block - which is why PR checks showed a red "Workers Builds: mail".
+  Keep it EMPTY: a preview then has no D1 binding and no secrets, so unreviewed branch code
+  can never read or trim production mail. `npm run test:config` guards this.
 - Do **not** rename the Worker in `worker/wrangler.toml`. The deployed Worker is `mail` in the
   dashboard, so the file must say `name = "mail"`. Workers Builds overrides the config name with
   `WRANGLER_CI_OVERRIDE_NAME`, so a mismatch still deploys fine from Git but makes

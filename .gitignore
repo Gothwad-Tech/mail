@@ -11,3 +11,9 @@ coverage/
 worker/.dev.vars
 .dev.vars
 .wrangler/
+
+# Local preview database (tools/dev-server.mjs)
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+worker/.dev-d1.sqlite

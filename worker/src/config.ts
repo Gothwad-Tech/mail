@@ -17,8 +17,9 @@
 // AUTH_SIGNIN_URL is optional and falls back to AUTH_HUB_URL, so a deployment
 // that sets only AUTH_HUB_URL keeps working exactly as before.
 //
-// Secrets (ACCOUNTS_INTERNAL_TOKEN, SUPABASE_SERVICE_ROLE_KEY, RESEND_API_KEY) are
-// set with `wrangler secret put` or in the dashboard. Never put them in wrangler.toml.
+// Storage is Cloudflare D1 (`[[d1_databases]] binding = "DB"`), not Supabase.
+// Secrets (ACCOUNTS_INTERNAL_TOKEN, RESEND_API_KEY) are set with
+// `wrangler secret put` or in the dashboard. Never put them in wrangler.toml.
 // =============================================================================
 
 export interface Env {
@@ -27,7 +28,8 @@ export interface Env {
   AUTH_HUB_URL?: string;
   AUTH_SIGNIN_URL?: string;
   MAIL_URL?: string;
-  SUPABASE_URL?: string;
+  // Cloudflare D1 binding (wrangler.toml [[d1_databases]]). Not a secret.
+  DB?: D1Database;
   ENVIRONMENT?: string; // "production" (default when unset) or "development"
   ALLOWED_ORIGINS?: string; // extra comma-separated origins for CORS / CSRF checks
   DAILY_SEND_LIMIT?: string;
@@ -38,7 +40,6 @@ export interface Env {
 
   // Secrets
   ACCOUNTS_INTERNAL_TOKEN?: string;
-  SUPABASE_SERVICE_ROLE_KEY?: string;
   RESEND_API_KEY?: string;
 }
 
@@ -47,7 +48,6 @@ export interface Config {
   authHubUrl: string;
   authSigninUrl: string;
   mailUrl: string;
-  supabaseUrl: string;
   accountsInternalToken: string | null;
   allowedOrigins: string[];
   isProduction: boolean;
@@ -87,7 +87,6 @@ export function readConfig(env: Env): Config {
     // blank AUTH_SIGNIN_URL also falls back rather than producing a bad URL.
     authSigninUrl: stripTrailingSlash(env.AUTH_SIGNIN_URL?.trim() || authHubUrl),
     mailUrl,
-    supabaseUrl: stripTrailingSlash((env.SUPABASE_URL || '').trim()),
     accountsInternalToken: env.ACCOUNTS_INTERNAL_TOKEN?.trim() || null,
     allowedOrigins: [mailUrl, ...extraOrigins],
     isProduction,
@@ -99,25 +98,18 @@ export function readConfig(env: Env): Config {
 }
 
 /**
- * True when SUPABASE_URL is a real project URL (not the wrangler.toml placeholder).
- * Local dev may point at a loopback stub, but never in production.
- */
-export function isSupabaseConfigured(config: Config): boolean {
-  if (/^https:\/\/[a-z0-9-]+\.supabase\.co$/.test(config.supabaseUrl)) return true;
-  return !config.isProduction && /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(config.supabaseUrl);
-}
-
-/**
  * Which settings this Worker instance can actually see. Booleans only - never a
  * value, never a prefix, never a length. `/api/health` returns this so a var or
  * secret that a deploy removed is obvious right away, instead of surfacing later
  * as a confusing 503. Deploys can wipe plain-text dashboard vars; secrets survive.
+ *
+ * `d1Binding` is true when the `DB` binding exists. The health endpoint also
+ * runs a real query, so "bound" is never mistaken for "working".
  */
-export function configStatus(env: Env, config: Config): Record<string, boolean> {
+export function configStatus(env: Env, _config: Config): Record<string, boolean> {
   return {
-    supabaseUrl: isSupabaseConfigured(config),
-    supabaseServiceKey: Boolean(env.SUPABASE_SERVICE_ROLE_KEY?.trim()),
-    accountsInternalToken: Boolean(config.accountsInternalToken),
+    d1Binding: Boolean(env.DB),
+    accountsInternalToken: Boolean(env.ACCOUNTS_INTERNAL_TOKEN?.trim()),
     resendApiKey: Boolean(env.RESEND_API_KEY?.trim()),
   };
 }

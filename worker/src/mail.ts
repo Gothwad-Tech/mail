@@ -1,16 +1,22 @@
 // =============================================================================
-// Mail domain logic: validation, row <-> API mapping, and scoped queries.
+// Mail domain logic: validation, row <-> API mapping, and scoped SQL.
 //
 // Rule for every function here: take `username` from the VERIFIED session and
-// put it in the query. A user can only ever see rows where to_username matches
-// their own username. Sent mail is stored with to_username = sender, so the
-// same rule covers Inbox, Sent, Drafts and Trash.
+// put it in the WHERE clause. A user can only ever see rows where to_username
+// matches their own username. Sent mail is stored with to_username = sender, so
+// the same rule covers Inbox, Sent, Drafts and Trash.
+//
+// Storage: Cloudflare D1 (SQLite). Bodies live gzip-compressed in `body_gzip`
+// (see db.ts), with the plain `body_text` / `body_html` columns kept as a
+// fallback for older rows. `size_bytes` is the real stored footprint, which is
+// what the retention quota counts.
 // =============================================================================
 
-import type { Db } from './db';
+import { compressBodies, readBodies, storedSize, type Db, type DbParam } from './db';
 import { HttpError } from './http';
 
 export type Folder = 'inbox' | 'starred' | 'sent' | 'drafts' | 'trash';
+export type StoredFolder = 'inbox' | 'sent' | 'drafts' | 'trash';
 const FOLDERS: readonly Folder[] = ['inbox', 'starred', 'sent', 'drafts', 'trash'];
 
 export interface AttachmentMeta {
@@ -19,29 +25,33 @@ export interface AttachmentMeta {
   size: number;
 }
 
-/** Row shape as stored in public.mail_messages (only the columns we read). */
+/** Row shape as stored in D1 `mail_messages` (only the columns we read). */
 export interface MailRow {
   id: string;
-  folder: 'inbox' | 'sent' | 'drafts' | 'trash';
+  to_username: string;
+  folder: StoredFolder;
   from_email: string;
   from_name: string | null;
   to_email: string | null;
-  cc_emails: string[] | null;
-  bcc_emails: string[] | null;
+  // SQLite has no arrays: these are JSON strings like '["a@b.com"]'.
+  cc_emails: string;
+  bcc_emails: string;
   subject: string | null;
   snippet: string | null;
-  attachments: AttachmentMeta[] | null;
-  is_read: boolean;
-  is_starred: boolean;
+  body_text: string | null;
+  body_html: string | null;
+  body_gzip: Uint8Array | null;
+  size_bytes: number;
+  attachments: string;
+  is_read: number;
+  is_starred: number;
   received_at: string;
-  body_text?: string | null;
-  body_html?: string | null;
 }
 
 /** What the browser gets. Camel-case, no DB column names leak out. */
 export interface MessageDto {
   id: string;
-  folder: 'inbox' | 'sent' | 'drafts' | 'trash';
+  folder: StoredFolder;
   from: { name: string | null; email: string };
   to: string[];
   cc: string[];
@@ -56,14 +66,15 @@ export interface MessageDto {
   bodyHtml?: string | null;
 }
 
-export const LIST_COLUMNS =
+const LIST_COLUMNS =
   'id,folder,from_email,from_name,to_email,cc_emails,bcc_emails,subject,snippet,attachments,is_read,is_starred,received_at';
-export const DETAIL_COLUMNS = `${LIST_COLUMNS},body_text,body_html`;
+const DETAIL_COLUMNS = `${LIST_COLUMNS},body_text,body_html,body_gzip`;
 
 export const MAX_RECIPIENTS = 25;
 export const MAX_SUBJECT_CHARS = 255;
 export const MAX_BODY_CHARS = 100_000;
-export const MAX_STORED_HTML_CHARS = 500_000;
+/** D1 rejects rows over 2 MB; 250k chars of HTML is far below that even before gzip. */
+export const MAX_STORED_HTML_CHARS = 250_000;
 const SNIPPET_CHARS = 160;
 
 const EMAIL_RE = /^[^\s@<>,;"']+@[^\s@<>,;"']+\.[^\s@<>,;"']+$/;
@@ -145,26 +156,38 @@ function splitList(value: string | null): string[] {
     .filter(Boolean);
 }
 
-export function toDto(row: MailRow, withBody: boolean): MessageDto {
-  const dto: MessageDto = {
+function parseJsonArray<T>(raw: unknown): T[] {
+  if (typeof raw !== 'string' || raw === '') return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** List-view DTO: no bodies, so listing 50 mails never decompresses anything. */
+export function toDto(row: MailRow): MessageDto {
+  return {
     id: row.id,
     folder: row.folder,
     from: { name: row.from_name, email: row.from_email },
     to: splitList(row.to_email),
-    cc: row.cc_emails ?? [],
-    bcc: row.bcc_emails ?? [],
+    cc: parseJsonArray<string>(row.cc_emails),
+    bcc: parseJsonArray<string>(row.bcc_emails),
     subject: row.subject ?? '',
     snippet: row.snippet ?? '',
     receivedAt: row.received_at,
-    isRead: row.is_read,
-    isStarred: row.is_starred,
-    attachments: row.attachments ?? [],
+    isRead: Boolean(row.is_read),
+    isStarred: Boolean(row.is_starred),
+    attachments: parseJsonArray<AttachmentMeta>(row.attachments),
   };
-  if (withBody) {
-    dto.bodyText = row.body_text ?? '';
-    dto.bodyHtml = row.body_html ?? null;
-  }
-  return dto;
+}
+
+/** Detail DTO: decompresses the gzip body (or falls back to legacy columns). */
+export async function toDetailDto(row: MailRow): Promise<MessageDto> {
+  const bodies = await readBodies(row);
+  return { ...toDto(row), bodyText: bodies.text, bodyHtml: bodies.html };
 }
 
 // ---------------------------------------------------------------------------
@@ -189,33 +212,34 @@ export function parseListOptions(url: URL): ListOptions {
 }
 
 export async function listMessages(db: Db, username: string, opts: ListOptions): Promise<MessageDto[]> {
-  const query: Record<string, string> = {
-    select: LIST_COLUMNS,
-    to_username: `eq.${username}`,
-    order: 'received_at.desc',
-    limit: String(opts.limit),
-  };
+  const params: DbParam[] = [username];
+  let sql = `SELECT ${LIST_COLUMNS} FROM mail_messages WHERE to_username = ?`;
   if (opts.folder === 'starred') {
-    query.is_starred = 'eq.true';
-    query.folder = 'in.(inbox,sent)';
+    // Starred view is the "important" mix, not Trash.
+    sql += ` AND is_starred = 1 AND folder IN ('inbox', 'sent')`;
   } else {
-    query.folder = `eq.${opts.folder}`;
+    sql += ' AND folder = ?';
+    params.push(opts.folder);
   }
-  if (opts.before) query.received_at = `lt.${new Date(opts.before).toISOString()}`;
+  if (opts.before) {
+    sql += ' AND received_at < ?';
+    params.push(new Date(opts.before).toISOString());
+  }
+  sql += ' ORDER BY received_at DESC LIMIT ?';
+  params.push(opts.limit);
 
-  const rows = await db.select<MailRow>('mail_messages', query);
-  return rows.map((r) => toDto(r, false));
+  const rows = await db.all<MailRow>(sql, ...params);
+  return rows.map(toDto);
 }
 
 export async function getMessage(db: Db, username: string, id: string): Promise<MessageDto> {
-  const rows = await db.select<MailRow>('mail_messages', {
-    select: DETAIL_COLUMNS,
-    id: `eq.${id}`,
-    to_username: `eq.${username}`,
-    limit: '1',
-  });
-  if (!rows[0]) throw new HttpError(404, 'not_found', 'Message not found.');
-  return toDto(rows[0], true);
+  const row = await db.first<MailRow>(
+    `SELECT ${DETAIL_COLUMNS} FROM mail_messages WHERE id = ? AND to_username = ? LIMIT 1`,
+    id,
+    username
+  );
+  if (!row) throw new HttpError(404, 'not_found', 'Message not found.');
+  return toDetailDto(row);
 }
 
 export interface PatchInput {
@@ -250,29 +274,36 @@ export function parsePatch(body: unknown): PatchInput {
 }
 
 export async function patchMessage(db: Db, username: string, id: string, patch: PatchInput): Promise<MessageDto> {
-  const update: Record<string, unknown> = {};
-  if (patch.isRead !== undefined) update.is_read = patch.isRead;
-  if (patch.isStarred !== undefined) update.is_starred = patch.isStarred;
-  if (patch.moveToTrash) update.folder = 'trash';
+  const sets: string[] = [];
+  const params: DbParam[] = [];
+  if (patch.isRead !== undefined) {
+    sets.push('is_read = ?');
+    params.push(patch.isRead ? 1 : 0);
+  }
+  if (patch.isStarred !== undefined) {
+    sets.push('is_starred = ?');
+    params.push(patch.isStarred ? 1 : 0);
+  }
+  if (patch.moveToTrash) sets.push("folder = 'trash'");
 
-  const rows = await db.update<MailRow>(
-    'mail_messages',
-    { id: `eq.${id}`, to_username: `eq.${username}`, select: DETAIL_COLUMNS },
-    update
+  const row = await db.first<MailRow>(
+    `UPDATE mail_messages SET ${sets.join(', ')} WHERE id = ? AND to_username = ? RETURNING ${DETAIL_COLUMNS}`,
+    ...params,
+    id,
+    username
   );
-  if (!rows[0]) throw new HttpError(404, 'not_found', 'Message not found.');
-  return toDto(rows[0], false);
+  if (!row) throw new HttpError(404, 'not_found', 'Message not found.');
+  return toDto(row);
 }
 
 /** Permanent delete. Only allowed for items already in Trash (safety net). */
 export async function deleteTrashed(db: Db, username: string, id: string): Promise<void> {
-  const rows = await db.remove<{ id: string }>('mail_messages', {
-    id: `eq.${id}`,
-    to_username: `eq.${username}`,
-    folder: 'eq.trash',
-    select: 'id',
-  });
-  if (!rows[0]) throw new HttpError(404, 'not_found', 'Message not found in Trash.');
+  const changes = await db.runCount(
+    "DELETE FROM mail_messages WHERE id = ? AND to_username = ? AND folder = 'trash'",
+    id,
+    username
+  );
+  if (changes === 0) throw new HttpError(404, 'not_found', 'Message not found in Trash.');
 }
 
 export interface DraftInput {
@@ -302,6 +333,24 @@ export function parseDraft(body: unknown): DraftInput {
   };
 }
 
+interface StoredPayload {
+  bodyGzip: Uint8Array;
+  sizeBytes: number;
+  snippet: string;
+}
+
+/** Caps bodies, gzips them, and measures the real footprint in one place. */
+async function buildPayload(text: string, html: string | null, sizeMeta: unknown): Promise<StoredPayload> {
+  const safeText = text.length > MAX_BODY_CHARS ? text.slice(0, MAX_BODY_CHARS) : text;
+  const safeHtml = html === null ? null : html.length > MAX_STORED_HTML_CHARS ? html.slice(0, MAX_STORED_HTML_CHARS) : html;
+  const bodyGzip = await compressBodies(safeText, safeHtml);
+  return {
+    bodyGzip,
+    sizeBytes: storedSize(bodyGzip, sizeMeta),
+    snippet: makeSnippet(safeText),
+  };
+}
+
 export async function saveDraft(
   db: Db,
   username: string,
@@ -309,43 +358,135 @@ export async function saveDraft(
   senderName: string | null,
   draft: DraftInput
 ): Promise<MessageDto> {
-  const row = {
-    folder: 'drafts',
-    to_username: username,
-    from_email: senderEmail,
-    from_name: senderName,
-    to_email: draft.to.join(', ') || null,
-    cc_emails: draft.cc,
-    bcc_emails: draft.bcc,
+  const toEmail = draft.to.join(', ') || null;
+  const html = draft.body ? textToHtml(draft.body) : null;
+  const payload = await buildPayload(draft.body, html, {
+    from: senderEmail,
+    name: senderName,
+    to: draft.to,
+    cc: draft.cc,
+    bcc: draft.bcc,
     subject: draft.subject,
-    snippet: makeSnippet(draft.body),
-    body_text: draft.body,
-    body_html: draft.body ? textToHtml(draft.body) : null,
-    is_read: true,
-    is_starred: false,
-  };
+  });
 
   if (draft.id) {
-    const rows = await db.update<MailRow>(
-      'mail_messages',
-      { id: `eq.${draft.id}`, to_username: `eq.${username}`, folder: 'eq.drafts', select: DETAIL_COLUMNS },
-      row
+    const row = await db.first<MailRow>(
+      `UPDATE mail_messages
+          SET to_email = ?, cc_emails = ?, bcc_emails = ?, subject = ?, snippet = ?,
+              body_text = NULL, body_html = NULL, body_gzip = ?, size_bytes = ?
+        WHERE id = ? AND to_username = ? AND folder = 'drafts'
+        RETURNING ${DETAIL_COLUMNS}`,
+      toEmail,
+      JSON.stringify(draft.cc),
+      JSON.stringify(draft.bcc),
+      draft.subject,
+      payload.snippet,
+      payload.bodyGzip,
+      payload.sizeBytes,
+      draft.id,
+      username
     );
-    if (!rows[0]) throw new HttpError(404, 'not_found', 'Draft not found.');
-    return toDto(rows[0], true);
+    if (!row) throw new HttpError(404, 'not_found', 'Draft not found.');
+    return toDetailDto(row);
   }
 
-  const inserted = await db.insert<MailRow>('mail_messages', row);
-  return toDto(inserted, true);
+  const id = crypto.randomUUID();
+  const row = await db.first<MailRow>(
+    `INSERT INTO mail_messages
+       (id, to_username, folder, from_email, from_name, to_email, cc_emails, bcc_emails,
+        subject, snippet, body_text, body_html, body_gzip, size_bytes, attachments,
+        is_read, is_starred, provider_id)
+     VALUES (?, ?, 'drafts', ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, '[]', 1, 0, NULL)
+     RETURNING ${DETAIL_COLUMNS}`,
+    id,
+    username,
+    senderEmail,
+    senderName,
+    toEmail,
+    JSON.stringify(draft.cc),
+    JSON.stringify(draft.bcc),
+    draft.subject,
+    payload.snippet,
+    payload.bodyGzip,
+    payload.sizeBytes
+  );
+  if (!row) throw new HttpError(503, 'db_error', 'Draft could not be saved.');
+  return toDetailDto(row);
 }
 
 export async function deleteDraft(db: Db, username: string, id: string): Promise<void> {
-  await db.remove<{ id: string }>('mail_messages', {
-    id: `eq.${id}`,
-    to_username: `eq.${username}`,
-    folder: 'eq.drafts',
-    select: 'id',
+  await db.runCount("DELETE FROM mail_messages WHERE id = ? AND to_username = ? AND folder = 'drafts'", id, username);
+}
+
+export interface NewMessageInput {
+  id?: string;
+  username: string;
+  folder: StoredFolder;
+  fromEmail: string;
+  fromName: string | null;
+  to: string[];
+  toEmail?: string | null;
+  cc?: string[];
+  bcc?: string[];
+  subject: string;
+  text: string;
+  html: string | null;
+  attachments?: AttachmentMeta[];
+  isRead: boolean;
+  isStarred?: boolean;
+  providerId: string | null;
+  receivedAt?: string;
+}
+
+/**
+ * Inserts one message and returns the stored DTO. Used by inbound SMTP and by
+ * the "save a copy in Sent" path, so both share the gzip + size_bytes logic.
+ */
+export async function insertMessage(db: Db, input: NewMessageInput): Promise<MessageDto> {
+  const cc = input.cc ?? [];
+  const bcc = input.bcc ?? [];
+  const attachments = input.attachments ?? [];
+  const toEmail = input.toEmail ?? (input.to.join(', ') || null);
+
+  const payload = await buildPayload(input.text, input.html, {
+    from: input.fromEmail,
+    name: input.fromName,
+    to: input.to,
+    cc,
+    bcc,
+    subject: input.subject,
+    attachments,
   });
+
+  const id = input.id ?? crypto.randomUUID();
+  const receivedAt = input.receivedAt ?? new Date().toISOString();
+  const row = await db.first<MailRow>(
+    `INSERT INTO mail_messages
+       (id, to_username, from_email, from_name, to_email, cc_emails, bcc_emails,
+        subject, snippet, body_text, body_html, body_gzip, size_bytes, attachments,
+        folder, is_read, is_starred, provider_id, received_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+     RETURNING ${DETAIL_COLUMNS}`,
+    id,
+    input.username,
+    input.fromEmail,
+    input.fromName,
+    toEmail,
+    JSON.stringify(cc),
+    JSON.stringify(bcc),
+    input.subject,
+    payload.snippet,
+    payload.bodyGzip,
+    payload.sizeBytes,
+    JSON.stringify(attachments),
+    input.folder,
+    input.isRead ? 1 : 0,
+    input.isStarred ? 1 : 0,
+    input.providerId,
+    receivedAt
+  );
+  if (!row) throw new HttpError(503, 'db_error', 'Message could not be saved.');
+  return toDetailDto(row);
 }
 
 export function startOfUtcDayIso(now: Date = new Date()): string {
@@ -353,9 +494,10 @@ export function startOfUtcDayIso(now: Date = new Date()): string {
 }
 
 export async function countSentToday(db: Db, username: string, now?: Date): Promise<number> {
-  return db.count('mail_messages', {
-    to_username: `eq.${username}`,
-    folder: 'eq.sent',
-    received_at: `gte.${startOfUtcDayIso(now)}`,
-  });
+  const row = await db.first<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM mail_messages WHERE to_username = ? AND folder = 'sent' AND received_at >= ?",
+    username,
+    startOfUtcDayIso(now)
+  );
+  return Number(row?.n ?? 0);
 }

@@ -2,6 +2,99 @@
 
 Updated every session. Newest first.
 
+## 2026-10-20 — 100% Cloudflare D1 migration + smart retention & gzip (Supabase removed)
+
+**Owner request:** remove every Supabase dependency from Mail and move it to 100% native
+Cloudflare Workers + D1 (`mail` database), with gzip-compressed bodies and a per-user retention
+choice (Latest 500 / Latest 1,500 / Store All) in Settings, while starred mail and drafts are
+never auto-deleted. Owner supplied the `mail` D1 id: `87854cea-7feb-46f3-ab99-2a2137f31105`.
+
+**Done — storage**
+
+- `worker/wrangler.toml`: added `[[d1_databases]] binding = "DB"`, `database_name = "mail"`,
+  real `database_id`; removed `SUPABASE_URL`; header rewritten for the two remaining secrets
+  (`ACCOUNTS_INTERNAL_TOKEN`, `RESEND_API_KEY`). Worker name stays `mail`.
+- `worker/src/db.ts`: rewritten. D1 wrapper + idempotent schema bootstrap in one `batch()`,
+  cached per D1 instance with `WeakMap<object, Promise<void>>`, so an empty database works on
+  the very first request (including `GET /api/health`). No PRAGMA anywhere.
+- Gzip helpers (`CompressionStream`/`DecompressionStream`): bodies stored as one `body_gzip`
+  BLOB containing `{t,h}` JSON; `readBodies()` still reads legacy `body_text`/`body_html`.
+  `storedSize()` computes the real footprint; text capped at 100k chars, HTML at 250k.
+- `sql/01_mail_schema.sql` (documented) and `sql/00_d1_console_bootstrap.sql` (comment-free).
+  Deleted `supabase/mail.sql` and the `supabase/` directory.
+- `worker/src/config.ts`: `Env.DB`, no Supabase fields; `configStatus()` now returns
+  `{ d1Binding, accountsInternalToken, resendApiKey }`.
+- `worker/src/mail.ts`: every query rewritten as scoped SQL (list/get/patch/delete/drafts/
+  count). `insertMessage()` is shared by inbound and send. `size_bytes` set on every write.
+
+**Done — retention (`worker/src/retention.ts`)**
+
+- `mail_settings` (`retention_limit` 500|1500|0, `quota_bytes` 50 MB, `updated_at`) and stats.
+- Rule A: Trash older than 30 days is purged.
+- Rule B: starred rows and drafts are excluded from EVERY automatic delete.
+- Rule C: count cap keeps the newest N unstarred inbox/sent messages (one indexed DELETE).
+- Rule D: Store All keeps everything under quota; over quota it deletes the oldest unstarred
+  trash first, then the oldest unstarred mail, in bounded rounds.
+- Runs after inbound mail, after a send, and immediately on `PATCH /api/mail/settings`.
+
+**Done — API + UI**
+
+- `GET /api/mail/settings` and `PATCH /api/mail/settings` (CSRF via `assertSafeWrite`).
+- `/api/health` now returns `engine: "cloudflare-d1-native"` and a live
+  `database: { bound, ready, tables }` from `sqlite_master`; zero Supabase fields.
+- `src/services/mailApi.ts`: `getSettings()`, `updateSettings(limit)` + types.
+- `src/context/MailContext.tsx`: loads usage when Settings opens, refreshes the list after a
+  retention change and toasts the cleanup counts.
+- `src/components/SettingsModal.tsx`: “Mailbox Storage & Email Retention” card with a live
+  progress bar (`Used X of 50 MB · N emails · K starred`), three radio options and the badge
+  “⭐ Starred emails & Drafts are never auto-deleted. Trash empties after 30 days.”
+
+**Done — local testing/preview**
+
+- `tools/local-d1.mjs`: real D1-shaped adapter over Node 22 `node:sqlite` (`DatabaseSync`),
+  zero NPM packages. No database mock anywhere in the tests.
+- `tools/dev-server.mjs` + `npm run preview:api`: runs the real Worker on local SQLite, seeds a
+  small mailbox for `pawan` (browser preview via `DEV_AUTH_USERNAME`) and `alice` (UI smoke
+  test cookie), fakes Resend and the Accounts cookie endpoints. Vite proxies `/api` to it.
+- Tests: **91 passing** — `test:config` 9, `test:auth` 5, `test:worker` 57, `test:d1` 15,
+  `test:ui` 5 (new Settings card test included). Tests cover auto-bootstrap, gzip round-trip
+  with Hindi/emojis/large HTML, 500-cap trimming, starred/draft immunity, 30-day trash purge,
+  Store All quota trimming (trash first), settings endpoints, full CRUD, inbound token/451/550
+  paths, CSRF/CORS and cookie rotation.
+- `package.json`: removed `@supabase/supabase-js`, `@google/genai`, `express`, `dotenv`,
+  `@types/express`, `motion` (all unused); `worker:secrets` now sets only the two secrets;
+  added `test:d1` and `preview:api`. `npm test` includes `test:d1`.
+- `tsconfig.json`: excludes `tests/local-d1.test.ts` and `tools/dev-server.mjs` because they
+  pull in Worker code with Workers types (the Worker tsconfig checks that code).
+- `.env.example`, `worker/.dev.vars.example`, `.gitignore` (local sqlite files) updated.
+
+**Verified in this sandbox**
+
+- `npm run lint` — pass. `npm test` — 91 pass. `npm run build` — pass
+  (`dist/assets/index-*.js` 306.61 kB / 89.21 kB gzip).
+- `npx wrangler deploy --config worker/wrangler.toml --dry-run` — bundles clean (154.13 KiB /
+  38.27 KiB gzip) and lists `env.DB (mail)` plus the eight public vars, no Supabase var.
+- Live preview: `npm run preview:api` + `npm run dev`. `/api/health` → ready:true, tables:2.
+  `PATCH /api/mail/settings` from a preview origin returned `cleanup: { trashPurged: 1 }`
+  (the seeded 45-day-old Trash mail), proving retention + CSRF + SQLite in one call.
+
+**Human steps still needed (owner)** — full detail in `docs/SETUP.md`
+
+1. Dashboard → Workers & Pages → `mail` → Settings → Variables and Secrets → Production:
+   confirm only `ACCOUNTS_INTERNAL_TOKEN` and `RESEND_API_KEY` exist; delete any leftover
+   `SUPABASE_SERVICE_ROLE_KEY` / `SUPABASE_URL`. Run `npm run worker:secrets:list` to check
+   names only.
+2. `npm run worker:deploy`, then `curl -s https://mail.gothwadtech.com/api/health` and confirm
+   `database.ready: true` and all three `configured` booleans `true`.
+3. Keep the route `mail.gothwadtech.com/api/*` → Worker `mail` and the Email Routing catch-all
+   `*@gothwadtech.com` → Worker `mail`.
+4. After the D1 version is verified, delete the old Mail Supabase project (export any old mail
+   first). Never delete the Accounts project.
+5. Test in the browser: open Settings → switch retention to 1,500 → the progress bar and
+   counts update; star a mail and confirm it survives a retention change.
+
+---
+
 ## 2026-10-11 — Worker name fix: repo config now says `mail` (matches the dashboard)
 
 **Report from the owner:** the repo said the Worker was `gothwad-mail-api`, but the Cloudflare

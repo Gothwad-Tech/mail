@@ -2,10 +2,10 @@
 // Guard for worker/wrangler.toml. Runs with: npm run test:config
 //
 // Why this exists: a deploy from the dashboard/Git used to wipe the Worker's
-// plain-text variables, and SUPABASE_URL was left as a placeholder, so the API
-// answered "supabase_not_configured". These checks keep the committed file
-// complete (every public var filled in), keep the real Supabase project URL in
-// place, and keep every secret out of the file. Names only - never a value.
+// plain-text variables, so the API answered "not configured". These checks keep
+// the committed file complete (every public var filled in), keep the Cloudflare
+// D1 `mail` binding in place, and keep every secret out of the file. Names only
+// - never a value. Gothwad Mail is 100% Cloudflare native (zero Supabase).
 // =============================================================================
 
 import { test } from 'node:test';
@@ -62,13 +62,13 @@ const REQUIRED_PUBLIC_VARS = [
   'AUTH_HUB_URL',
   'AUTH_SIGNIN_URL',
   'MAIL_URL',
-  'SUPABASE_URL',
   'ENVIRONMENT',
   'DAILY_SEND_LIMIT',
   'MAX_INBOUND_BYTES',
 ];
 
-const SECRET_VARS = ['ACCOUNTS_INTERNAL_TOKEN', 'SUPABASE_SERVICE_ROLE_KEY', 'RESEND_API_KEY'];
+// Only two Worker secrets remain after the D1 migration.
+const SECRET_VARS = ['ACCOUNTS_INTERNAL_TOKEN', 'RESEND_API_KEY'];
 
 function value(key: string): string {
   const entry = vars.get(key);
@@ -95,14 +95,33 @@ test('every public var the Worker needs is filled in the file', () => {
   }
 });
 
-test('SUPABASE_URL is a real project URL, not a placeholder', () => {
-  const url = value('SUPABASE_URL');
-  assert.match(
-    url,
-    /^https:\/\/[a-z0-9-]+\.supabase\.co$/,
-    `[vars] SUPABASE_URL must be https://<project-ref>.supabase.co, got "${url}"`,
-  );
-  assert.doesNotMatch(url, /YOUR_PROJECT_REF|PROJECT_REF|example|REPLACE_ME/i);
+test('the Cloudflare D1 binding points at the `mail` database', () => {
+  // Exactly one binding, named DB. A wrong database_name or id silently points
+  // the Worker at another database (or a non-existent one).
+  const d1Block = RAW.match(/\[\[d1_databases\]\]([\s\S]*?)(?=\n\[|$)/);
+  assert.ok(d1Block, 'wrangler.toml has no [[d1_databases]] block');
+  const block = d1Block[1];
+  assert.match(block, /^\s*binding\s*=\s*"DB"\s*$/m, 'the binding must be DB');
+  assert.match(block, /^\s*database_name\s*=\s*"mail"\s*$/m, 'the database must be named mail');
+  const id = block.match(/^\s*database_id\s*=\s*"([^"]+)"\s*$/m)?.[1];
+  assert.ok(id, 'database_id is missing');
+  assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, 'database_id must be a UUID');
+  assert.doesNotMatch(block, /REPLACE_ME|PASTE|YOUR_|example/i, 'database_id is still a placeholder');
+});
+
+test('the config is 100% Cloudflare native: no Supabase URL or key names', () => {
+  // Comments may explain the migration; actual settings may not contain it.
+  const code = LINES.join('\n');
+  assert.doesNotMatch(code, /SUPABASE/i, 'SUPABASE_* must not appear in wrangler.toml');
+  assert.doesNotMatch(code, /supabase\.co/i, 'no Supabase project URL may remain');
+});
+
+test('the previews block exists so pull-request builds can run wrangler preview', () => {
+  // Workers Builds runs `npx wrangler preview` for non-production branches and
+  // fails immediately without this block. It must stay EMPTY: a preview has to
+  // have no D1 binding, otherwise unreviewed branch code could touch real mail.
+  assert.match(RAW, /^previews\s*=\s*\{\s*\}\s*$/m, 'wrangler.toml needs an empty `previews = {}` block');
+  assert.doesNotMatch(RAW, /^\s*\[\[previews\./m, 'previews must not declare bindings (no real D1 in a preview)');
 });
 
 test('the Accounts hosts stay split: server calls vs browser links', () => {

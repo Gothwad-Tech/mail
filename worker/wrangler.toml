@@ -1,17 +1,16 @@
 # =============================================================================
 # Gothwad Mail Worker config. NO SECRETS IN THIS FILE.
+# 100% Cloudflare native: Workers + D1 (`mail` database). Zero Supabase.
 #
 # THIS FILE IS THE SOURCE OF TRUTH. Whatever is typed in the Cloudflare
 # dashboard under "Variables" (plain text) is overwritten by the next deploy;
 # only encrypted "Secrets" survive a deploy untouched. `keep_vars = true`
 # below stops a deploy from deleting dashboard variables that are NOT listed
-# here. A name that IS listed here always takes this file's value - that is
-# why SUPABASE_URL is filled in and never left as a placeholder.
+# here.
 #
 # Secrets (never in this file; set in the dashboard as type "Secret", or from
 # your machine with `npm run worker:secrets`):
 #   ACCOUNTS_INTERNAL_TOKEN     same value as MAIL_INTERNAL_TOKEN in Accounts
-#   SUPABASE_SERVICE_ROLE_KEY   Mail project's sb_secret_... (or legacy eyJ... service_role)
 #   RESEND_API_KEY              re_...
 #
 # See which secret NAMES the deployed Worker has (names only, never values):
@@ -34,6 +33,30 @@ compatibility_date = "2025-09-01"
 # default). Secrets are never deleted by a deploy either way.
 keep_vars = true
 
+# Worker Previews: Workers Builds runs `npx wrangler preview` (not `deploy`) for
+# every NON-production branch, i.e. for pull requests. That command refuses to
+# start unless the config has a `previews` block, which is why PR builds showed a
+# red "Workers Builds: mail" check while main stayed green.
+#
+# It is deliberately EMPTY: a Preview gets only the bindings listed here, so an
+# unreviewed branch build has NO D1 database and NO secrets. That is the point -
+# branch code must never be able to read or trim production mail. Production
+# deploys (`npx wrangler deploy`) ignore this block and keep the `DB` binding and
+# `[vars]` below. Give previews their own database only after creating a separate
+# D1 database (e.g. `mail-preview`) and never point this at `mail`.
+previews = {}
+
+# -----------------------------------------------------------------------------
+# Cloudflare D1 (the `mail` database created in the dashboard).
+# The Worker creates its own tables on the first request (idempotent), so a
+# brand-new empty D1 database works with zero manual SQL. `sql/` has the same
+# schema for humans who prefer the dashboard console.
+# -----------------------------------------------------------------------------
+[[d1_databases]]
+binding = "DB"
+database_name = "mail"
+database_id = "87854cea-7feb-46f3-ab99-2a2137f31105"
+
 [vars]
 APP_DOMAIN = "gothwadtech.com"
 # AUTH_HUB_URL = base for every SERVER-side Accounts call (/api/auth/me,
@@ -47,10 +70,6 @@ AUTH_HUB_URL = "https://api.gothwadtech.com"
 # accountUrl). Optional; falls back to AUTH_HUB_URL when unset.
 AUTH_SIGNIN_URL = "https://accounts.gothwadtech.com"
 MAIL_URL = "https://mail.gothwadtech.com"
-# Public project URL of the SEPARATE Mail Supabase project (not Accounts').
-# Not a secret: it ships inside every Supabase client. The Worker refuses to
-# call Supabase if this ever becomes a placeholder again.
-SUPABASE_URL = "https://womkqxzbiwgfudxbwkau.supabase.co"
 ENVIRONMENT = "production"
 # Extra allowed origins, comma-separated (e.g. a Pages preview URL). Empty = none.
 ALLOWED_ORIGINS = ""

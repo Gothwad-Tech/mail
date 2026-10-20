@@ -1,59 +1,67 @@
 # PLAN.md — what's built, what's next
 
-## Phase 1 — Real app on the free tier (this branch)
+## Phase 2 — 100% Cloudflare native + smart retention (this branch)
+
+| Area | Status | Notes |
+| --- | --- | --- |
+| Storage | **Done** | Cloudflare D1, database `mail`, binding `DB`. Zero Supabase. |
+| Schema | **Done** | `mail_settings` + `mail_messages`, auto-bootstrapped on the first request (`worker/src/db.ts`, `WeakMap` per D1 instance). Same DDL documented in `sql/01_mail_schema.sql`. |
+| Compression | **Done** | Bodies gzip-compressed into one `body_gzip` BLOB (`{t,h}` JSON). Legacy `body_text`/`body_html` still readable. Raw text capped at 100k chars, HTML at 250k, so a row never approaches D1's 2 MB limit. |
+| Per-user quota | **Done** | `mail_settings.quota_bytes` = 50 MB compressed (~25k mails) protects the shared free 500 MB D1. `size_bytes` per row makes usage a single `SUM()`. |
+| Retention | **Done** | 30-day Trash purge; starred + drafts immune; count cap 500/1500; "Store All" trims oldest unstarred trash first, then oldest mail. Runs on inbound, on send, and immediately on settings change. |
+| Settings API | **Done** | `GET/PATCH /api/mail/settings` (CSRF-protected), returns live usage + `cleanup` counts. |
+| Settings UI | **Done** | Storage progress bar + 3 retention choices + safety badge in `SettingsModal.tsx`, wired through `MailContext` and `mailApi`. |
+| `/api/health` | **Done** | `engine: "cloudflare-d1-native"`, live `database: { bound, ready, tables }`, boolean `configured`. No Supabase fields. |
+| Tests | **Done** | 91 tests. Worker tests (57) and D1 tests (15) run against **real** SQLite via `tools/local-d1.mjs` (Node 22 `node:sqlite`). |
+| Local preview | **Done** | `npm run preview:api` runs the real Worker on local SQLite + seeded mailbox; Vite proxies `/api`. No Accounts/Resend needed. |
+| Deploy config | **Done** | Worker `mail`, D1 `mail` (`database_id = 87854cea-7feb-46f3-ab99-2a2137f31105`), two secrets. Dry-run clean. |
+| Docs | **Done** | README, AGENTS, TASK, PLAN, docs/MAIL.md, docs/SETUP.md, sql/ |
+
+## Phase 1 — Real app on the free tier (done earlier)
 
 | Area | Status | Notes |
 | --- | --- | --- |
 | Worker REST API (`/api/*`) | Done, tested | Session, folders, read/star/trash, drafts, send |
-| Accounts SSO (cookie) | Implemented; live handoff needs verification | `/api/auth/me`; rotated cookies forwarded; 401 only for a real Accounts 401/403, every other answer is a 503 with its own code (see `docs/MAIL.md`); confirm production shared-cookie settings |
+| Accounts SSO (cookie) | Done | `/api/auth/me`; rotated cookies forwarded; 401 only for a real Accounts 401/403, everything else is a 503 with its own code (see `docs/MAIL.md`) |
 | Accounts SSO (bearer) | Done, tested | `/api/oauth/userinfo`. Not used by the web app yet |
 | Send via Resend | Done, not live-tested | Needs Resend key and verified domain |
 | Daily send cap | Done | Default 30 (`DAILY_SEND_LIMIT`) |
 | Inbound Email handler | Done in code, tested | Depends on Accounts username endpoint and shared secret; keep Email Routing off until verified |
-| Supabase schema | Done (`supabase/mail.sql`) | Run only in the separate Mail Supabase project |
-| Frontend (API-backed) | Done | Visual check still needed |
-| Auth gate | Implemented with return-loop guard | Signed-out goes to `/signin?choose=1&next=`; a returned-but-unverified session shows a diagnostic instead of looping |
-| Worker config / secrets | Done, guarded | `wrangler.toml` holds every public var (real `SUPABASE_URL`, not a placeholder) with `keep_vars = true`; the three secrets live only in the dashboard as type **Secret**; `npm run test:config` fails on blanks, placeholders or secret-shaped values; `/api/health` `configured` shows booleans |
-| Docs | Done | README, AGENTS, TASK, PLAN, docs/ |
+| Frontend (API-backed) | Done | Visual check still worthwhile |
 
 ## Decisions made with the owner
 
-1. **Mail has its own Supabase project.** Mail never reads Accounts' `public.profiles`, and
-   it does not share Accounts' database key. `user_id` remains null; mailbox ownership is the
-   normalized `to_username`.
-2. **Inbound is accounts-only, through Accounts' internal API.** The Worker sends the
-   lowercased local part to `GET {AUTH_HUB_URL}/api/internal/usernames/:username` with
-   `Authorization: Bearer <ACCOUNTS_INTERNAL_TOKEN>` (the same value as Accounts'
-   `MAIL_INTERNAL_TOKEN`). Only an explicit `200 {"exists": true}` permits storage; `false`
-   gets 550, while missing secrets, network/timeout errors, non-200 responses, and bad JSON
-   get 451. Bad name shape gets 550 without a network call.
-   - The Accounts `main` docs did not yet document this endpoint when this Mail integration
-     was prepared. This code follows the owner's supplied contract; do not enable Email
-     Routing until Accounts documents/deploys the matching endpoint and the human confirms it.
-   - Unknown names are never guessed to exist. The Accounts database is not queried.
-3. **Attachments: not now.** Only name, type and size are kept, and bytes are dropped. The
-   brief allows tiny files (under 200 KB total). Storing them is a later step (needs a place
-   on the free tier, such as Supabase Storage).
+1. **Mail is 100% Cloudflare native.** Workers + D1, no Supabase project, no PostgREST, no
+   database key. This keeps the two free Supabase projects for the heavy social/realtime apps
+   (PlusTube, Indogram, GrixChat).
+2. **Mail has its own D1 database (`mail`)** and never reads the Accounts `accounts` database.
+   Accounts is still the identity source over HTTP. Mailbox ownership is the normalized
+   `to_username`.
+3. **Bodies are compressed.** Gzip is the reason hundreds of thousands of mails fit in the
+   free tier. Decompression happens only when a message is opened, never while listing.
+4. **Retention is inline, not a cron.** Free Workers have no always-on scheduler, so cleanup
+   runs on inbound, on send, and on settings change. Starred mail and drafts are sacred.
+5. **Attachments: not now.** Only name, type and size are kept, and bytes are dropped. Storing
+   files is a later step (needs R2 or a similar free-tier store).
+6. **Local testing uses real SQLite.** `node:sqlite` + a D1-shaped adapter means tests exercise
+   real CHECK constraints, indexes and BLOCs; no mock can drift from production SQL.
 
 ## Known gaps (not blocking)
 
-- **Live Accounts SSO still needs verification.** A user reported that account selection returns
-  to the chooser. Mail no longer reports a broken Accounts answer as a signed-out 401, so the
-  `/api/session` status now names the failing branch (401 = no shared cookie, 503
-  `accounts_user_invalid` = profile row has no username, 503 `accounts_unexpected_response` =
-  `/api/*` not reaching the Accounts Worker). Check the deployed Accounts cookie Domain and the
-  codes as described in `docs/MAIL.md`.
+- **Live Accounts SSO still needs verification** in production. The status codes in
+  `docs/MAIL.md` name the failing branch.
 - No Undo for moving to Trash. No "restore from Trash" yet.
 - Search filters only the list already loaded in the browser.
 - Sidebar folder counts are not shown (there is no cheap server count).
 - No polling and no live updates. Refresh is manual.
-- The Accounts `ecosystem_apps` row gets `redirect_uris` for `/auth/callback` (see
-  `docs/SETUP.md`). The Mail web app has no `/auth/callback` route yet, because the cookie
-  SSO flow does not need one. Add it only if an OAuth code flow is built.
+- No automatic import of mail that lived in the old Supabase project. Export it manually
+  before deleting that project (see `docs/SETUP.md`).
+- Attachments metadata is kept, but there is no download because bytes are never stored.
 
-## Phase 2 — later (not started)
+## Phase 3 — later (not started)
 
-- Tiny attachment storage (if decided).
+- Tiny attachment storage on R2 (free tier) with a per-user cap.
 - Threading (grouping replies).
 - Restore from Trash.
-- Server-side search.
+- Server-side search (SQLite `LIKE` or FTS5).
+- Optional scheduled cleanup with a Cron Trigger, as a safety net behind the inline runs.

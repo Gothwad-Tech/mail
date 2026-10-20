@@ -6,75 +6,85 @@ your address comes from your username.
 - **Web app**: React + Vite + Tailwind PWA (`src/`).
 - **Mail Worker** (`worker/`): Cloudflare Worker. REST API under `/api/*`, plus the inbound
   Email handler.
-- **Storage**: Supabase in a separate Mail project (`supabase/mail.sql`).
+- **Storage**: **Cloudflare D1** (`mail` database, binding `DB`) — 100% native, zero Supabase.
+  Message bodies are gzip-compressed, so a free 500 MB database holds roughly 250,000 emails.
 - **Outbound**: Resend, called only from the Worker.
 
 Folders: **Inbox, Starred, Sent, Drafts, Trash**.
 
+**Smart retention** (per user, in Settings): latest **500** (default), latest **1,500**, or
+**Store All** up to a 50 MB fair-use quota. Starred emails and drafts are never auto-deleted;
+Trash empties after 30 days.
+
 No demo data. Mailbox ownership comes from the verified Accounts session; messages live in
-Mail's own database. Inbound addresses are checked through Accounts' internal API.
+Mail's own D1 database. Inbound addresses are checked through Accounts' internal API.
 
 ## Quick start (local)
 
 ```bash
 npm install
 cp .env.example .env.local           # public settings only; no secrets
-cp worker/.dev.vars.example worker/.dev.vars   # local secrets; fill in your own values
+cp worker/.dev.vars.example worker/.dev.vars   # local-only values
 
-npm run worker:dev                   # Worker on http://127.0.0.1:8787
+# Full preview: real Worker + REAL SQLite (node:sqlite), Resend and Accounts faked
+npm run preview:api                  # API on http://127.0.0.1:8787
 npm run dev                          # web app on http://localhost:3000 (proxies /api)
 ```
 
-Without a signed-in Accounts session, the app sends you to the Accounts sign-in page. For
-local work you can set `DEV_AUTH_USERNAME` in `worker/.dev.vars` (development only).
+Prefer Wrangler's own local D1? Use `npm run worker:dev` instead of `preview:api`. Both
+bootstrap the schema automatically — no SQL step, no database account.
+
+Without a signed-in Accounts session the app sends you to Accounts. For local work set
+`DEV_AUTH_USERNAME` in `worker/.dev.vars` (development only).
 
 ## Scripts
 
 | Command | What it does |
 | --- | --- |
 | `npm run dev` | Web app (Vite, port 3000) |
+| `npm run preview:api` | Real Worker + local SQLite D1 + seeded demo mailbox (port 8787) |
 | `npm run build` | Production build into `dist/` |
 | `npm run lint` | Typecheck the web app and the Worker |
-| `npm run test:worker` | Worker tests (no network) |
+| `npm run test:worker` | Worker tests on real SQLite (no network) |
+| `npm run test:d1` | D1 adapter, gzip and retention tests on real SQLite |
 | `npm run test:auth` | Sign-in redirect/return URL tests (no network) |
-| `npm run test:config` | Checks `worker/wrangler.toml` is complete and secret-free |
-| `npm run test:ui` | jsdom smoke test of the real app (needs the Worker running) |
-| `npm run worker:dev` | Worker locally (`wrangler dev`) |
+| `npm run test:config` | Checks `worker/wrangler.toml` is complete, D1-bound and secret-free |
+| `npm run test:ui` | jsdom smoke test of the real app (needs `preview:api` or `worker:dev`) |
+| `npm run worker:dev` | Worker locally (`wrangler dev`, automatic local D1) |
 | `npm run worker:deploy` | Deploy the Worker |
-| `npm run worker:secrets` | Set the three Worker secrets (Wrangler prompts for values) |
+| `npm run worker:secrets` | Set the two Worker secrets (Wrangler prompts for values) |
 | `npm run worker:secrets:list` | List the deployed Worker's secret **names** (never values) |
 
 ## Configuration
 
-Public settings are in `worker/wrangler.toml` (`APP_DOMAIN`, `AUTH_HUB_URL`,
-`AUTH_SIGNIN_URL`, `MAIL_URL`, `SUPABASE_URL`, `DAILY_SEND_LIMIT`, `MAX_INBOUND_BYTES`) and are
-already filled in — the file is the source of truth and is re-applied on every deploy
-(`keep_vars = true` keeps any dashboard-only var too). Secrets are `ACCOUNTS_INTERNAL_TOKEN`,
-`SUPABASE_SERVICE_ROLE_KEY` and `RESEND_API_KEY`; set them with `npm run worker:secrets` or in
-the dashboard as type **Secret**, never in a file. Deploys never delete secrets, but they do
-replace/remove plain-text dashboard variables.
+Public settings live in `worker/wrangler.toml` (`APP_DOMAIN`, `AUTH_HUB_URL`,
+`AUTH_SIGNIN_URL`, `MAIL_URL`, `DAILY_SEND_LIMIT`, `MAX_INBOUND_BYTES`) plus the D1 binding.
+The file is the source of truth and is re-applied on every deploy (`keep_vars = true` keeps
+dashboard-only vars too). Secrets are only `ACCOUNTS_INTERNAL_TOKEN` and `RESEND_API_KEY`; set
+them with `npm run worker:secrets` or in the dashboard as type **Secret**, never in a file.
 
-After a deploy, `GET /api/health` shows which settings the Worker can see, as booleans only:
+After a deploy, `GET /api/health` shows live D1 readiness and which settings exist, as booleans
+only:
 
 ```json
-{"ok":true,"service":"gothwad-mail-api","environment":"production",
- "configured":{"supabaseUrl":true,"supabaseServiceKey":true,
-               "accountsInternalToken":true,"resendApiKey":true}}
+{"ok":true,"service":"gothwad-mail","engine":"cloudflare-d1-native",
+ "environment":"production",
+ "database":{"bound":true,"ready":true,"tables":2},
+ "configured":{"d1Binding":true,"accountsInternalToken":true,"resendApiKey":true}}
 ```
 
 `AUTH_HUB_URL` is the base for every server-side Accounts call and must reach the Accounts
 Worker (`https://api.gothwadtech.com`, its Custom Domain). `AUTH_SIGNIN_URL` is used only for
 browser-facing links — the sign-in redirect and `accountUrl` — and falls back to
-`AUTH_HUB_URL` when unset. Set both on the deployed Worker too (dashboard → Settings →
-Variables and Secrets → Production); see `docs/SETUP.md`.
+`AUTH_HUB_URL` when unset.
 
 Nothing in the code hardcodes the domain. Fallback defaults may use `gothwadtech.com`.
 
 ## Deploy
 
-Follow **[docs/SETUP.md](docs/SETUP.md)**. It covers the separate Mail Supabase project,
-optional Accounts SSO SQL, Worker secrets and deployment. Do not enable Email Routing until
-the Accounts username endpoint is confirmed working.
+Follow **[docs/SETUP.md](docs/SETUP.md)**. It covers the D1 database, the two secrets, the
+route, Email Routing and verification. Do not enable Email Routing until the Accounts username
+endpoint is confirmed working.
 
 The Worker is named `mail` in the Cloudflare dashboard and `worker/wrangler.toml` says
 `name = "mail"`. Keep the two equal — Git deploys hide a mismatch, but local commands
@@ -82,19 +92,21 @@ The Worker is named `mail` in the Cloudflare dashboard and `worker/wrangler.toml
 
 ## Docs
 
-- [docs/SETUP.md](docs/SETUP.md): human setup steps (dashboards, DNS, secrets).
-- [docs/MAIL.md](docs/MAIL.md): how sign-in, sending, drafts, inbound and limits work.
+- [docs/SETUP.md](docs/SETUP.md): human setup steps (D1, secrets, deploy, verification).
+- [docs/MAIL.md](docs/MAIL.md): how sign-in, storage, retention, sending and inbound work.
 - [AGENTS.md](AGENTS.md): rules for working on this repo.
 - [PLAN.md](PLAN.md): status and open decisions.
 - [TASK.md](TASK.md): session log.
+- [sql/01_mail_schema.sql](sql/01_mail_schema.sql): documented D1 schema.
 
 ## Security notes
 
-- The browser never gets the Supabase service key or the Resend key.
+- The browser never gets any secret and never talks to D1. Only the Worker's `DB` binding
+  reaches the database.
 - Every mail query is scoped to the signed-in user's username.
 - Email HTML is shown in a sandboxed iframe with no scripts.
 - Writes from the browser must come from the app's own origin and send JSON.
-- The send cap (default 30 a day per user) limits abuse and keeps the free tier safe.
+- The send cap (default 30 a day per user) and the per-mailbox quota keep the free tier safe.
 
 ## Known limits
 
