@@ -2,6 +2,92 @@
 
 Updated every session. Newest first.
 
+## 2026-10-20 — Account switcher built on the Mail side (Google flow), tested end to end
+
+**Owner request:** accounts agent ko prompt de diya; Mail side parallel me banao — Google jaisa
+flow: ek hi profile section, saare signed-in accounts, tap par ~1 second switch.
+
+**Backend — `worker/src/accounts.ts` (new)**
+
+- `GET /api/mail/accounts`: proxies Accounts' list, then adds **per-account unread counts** from
+  Mail's D1 in one grouped query, only for usernames Accounts just verified.
+- `POST /api/mail/accounts/switch` `{id}`: proxies the switch, forwards rotated `Set-Cookie`
+  (reuses `keepAccountsCookies`), 401 only when Accounts really says signed out, 409
+  `account_not_signed_in` when the slot's session is gone.
+- `POST /api/mail/accounts/signout` `{id}`: per-account sign-out.
+- `GET /api/mail/accounts/add`: 302 to `{AUTH_SIGNIN_URL}/signin?choose=1&add=1&next=…`, built
+  from config (no open redirect).
+- Accounts 404 (feature not deployed) → `{ accounts: [], unread: {}, unsupported: true }`, so
+  Mail ships first and lights up later. Validation drops bad slot ids/usernames/duplicates, and
+  emails are derived server-side.
+- 14 new worker tests on real SQLite with a stubbed Accounts (72 total).
+
+**Frontend**
+
+- `mailApi`: `getAccounts`, `switchAccount`, `signOutAccount` + `AccountSummary`/`AccountsInfo`.
+- `useSession`: `refresh()` re-reads the session **without** the full-screen loading state.
+- `MailContext`: accounts state (`accounts`, `activeAccountId`, `accountUnread`,
+  `accountsUnsupported`, `switchingAccountId`), `refreshAccounts` (one GET per page load, no
+  polling), `switchAccount` (clears folder/detail/prefetch caches, selection, draft, then asks App
+  to re-read the session), `signOutAccount`.
+- `App.tsx`: `<MailProvider key={user.username}>` → a switch remounts the provider, so no cache
+  can survive an account change.
+- `AccountSheet`: the real switcher — avatar + name + address + unread pill + check on the active
+  row, spinner on the row being switched, per-row sign-out (confirm only for the last account),
+  “Add another account”. Single-account fallback card when Accounts has not shipped yet.
+- `Header`: `+n` bubble on the avatar when more accounts exist, `Shift+A` opens the sheet.
+- `tools/dev-server.mjs`: two-account Accounts stub (alice/bob) driven by a `gothwad_active`
+  cookie, so the preview and the UI test exercise the real switch path.
+
+**Verified**
+
+- `npm run lint` clean. `npm test` → **108 pass** (config 10, auth 5, worker **72**, d1 15,
+  ui **6** — the new one opens the switcher, taps bob, and asserts the app is fully bob after).
+- Manual: `GET /api/mail/accounts` → alice+bob with unread; `POST switch {id:"b"}` → 200,
+  `set-cookie: gothwad_active=b`; `GET /api/session` with that cookie → `bob@gothwadtech.com`.
+- `npm run build` → main 302.40 kB (89.84 kB gzip); still one lazy chunk per modal.
+
+**Pending:** live check with the two real accounts once the Accounts PR lands.
+
+---
+
+## 2026-10-20 — Multi-account switcher: plan + Accounts-side prompt (docs only, no code)
+
+**Owner request:** Google jaisa account section — ek hi jagah saare signed-in Gothwad accounts,
+avatar + unread, tap karke us mailbox par ~1 second me switch. Abhi sirf ek email dikhti hai
+jabki `accounts.gothwadtech.com` par 2 logins hain.
+
+**Finding:** ye Mail me akela fix nahi ho sakta. `worker/src/session.ts` har request par Accounts
+se **ek** identity leta hai, aur Accounts ek hi session per browser rakhta hai. Mail ko apni
+account list rakhne par majboor karna = doosre accounts ke credentials Mail me rakhna, jo
+allowed nahi. Data migration bhi nahi chahiye: har row pehle se `username` se scoped hai.
+
+**Deliverables (docs only this session):**
+
+- `docs/ACCOUNTS_AGENT_PROMPT.md` — self-contained prompt for the Accounts agent: per-account
+  session cookies (`gothwad_sess_a..f`), HMAC-signed `gothwad_accounts` list, `gothwad_active`,
+  and four endpoints (`GET /api/auth/accounts`, `POST /api/auth/switch`,
+  `POST /api/auth/accounts/:id/signout`, `GET /signin?choose=1&add=1`). Includes the cookie
+  constraints Mail's proxy depends on, 8 required tests, and legacy single-account fallback so
+  nothing breaks.
+- `docs/MULTI_ACCOUNT_PLAN.md` — Google-parity behaviour table, Mail-side work (proxy endpoints
+  in a new `worker/src/accounts.ts`, session plumbing + cache reset, switcher UI in
+  `AccountSheet`, instant switch), security checklist, 12 acceptance tests, $0 cost, rollback.
+
+**Key design decisions:**
+
+- **Server-side path resolution, not a client header.** The active account is a cookie resolved
+  by Accounts, so `GET /api/auth/me` keeps returning one identity and `session.ts` needs no change.
+- **Mail proxies Accounts, no CORS.** Reuses `takeUpstreamCookies` so `Set-Cookie` rotation is
+  forwarded exactly as it is today.
+- **404 fallback = hidden switcher.** Mail can ship first and light up when Accounts deploys.
+- **Caches cleared before first paint on switch** (privacy, not just freshness).
+- Unread per account is computed in Mail's D1 for Accounts-verified usernames only.
+
+**Blocked on:** Accounts repo (Part A). Mail-side Part B starts when that contract exists.
+
+---
+
 ## 2026-10-20 — Fast, mobile-first UI + PWA polish (layout, caching, ETag)
 
 **Owner request:** make the webmail feel right on mobile and desktop, keep the UI simple, make

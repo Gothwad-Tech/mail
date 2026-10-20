@@ -18,12 +18,17 @@
 //   POST   /api/mail/drafts                { id?, to, cc, bcc, subject, body }
 //   DELETE /api/mail/drafts/:id
 //   POST   /api/mail/send                  { to, cc?, bcc?, subject, body, draftId? }
+//   GET    /api/mail/accounts              signed-in accounts + per-account unread
+//   POST   /api/mail/accounts/switch        { id } -> switch the active account
+//   POST   /api/mail/accounts/signout       { id } -> sign one account out
+//   GET    /api/mail/accounts/add          302 to Accounts sign-in in append mode
 // =============================================================================
 
 import { readConfig, configStatus, type Config, type Env } from './config';
 import { Db } from './db';
 import { corsHeaders, errorResponse, HttpError, json, assertSafeWrite, readJson } from './http';
 import * as mail from './mail';
+import { addAccountResponse, listAccounts, signOutAccount, switchAccount } from './accounts';
 import { handleInbound } from './inbound';
 import {
   enforceRetention,
@@ -265,6 +270,32 @@ async function route(request: Request, env: Env, config: Config): Promise<Respon
       draft
     );
     return json({ message });
+  }
+
+  // ----- Account switcher (see accounts.ts) --------------------------------
+  // These routes deliberately do not call requireSession: the Accounts call they
+  // make is itself the authentication check, and mapping its answer here keeps
+  // the "401 only means signed out" rule in one place.
+  if (path === '/api/mail/accounts' && method === 'GET') {
+    return json(await listAccounts(env, request, config));
+  }
+
+  if (path === '/api/mail/accounts/switch' && method === 'POST') {
+    assertSafeWrite(request, config);
+    const body = await readJson<{ id?: unknown }>(request);
+    return json(await switchAccount(env, request, config, body?.id));
+  }
+
+  if (path === '/api/mail/accounts/signout' && method === 'POST') {
+    assertSafeWrite(request, config);
+    const body = await readJson<{ id?: unknown }>(request);
+    return json(await signOutAccount(env, request, config, body?.id));
+  }
+
+  if (path === '/api/mail/accounts/add' && method === 'GET') {
+    // A navigation, so it needs the signed-in username to build the link.
+    const session = await requireSession(request, config);
+    return addAccountResponse(config, session);
   }
 
   const idMatch = path.match(/^\/api\/mail\/(messages|drafts)\/([^/]+)$/);

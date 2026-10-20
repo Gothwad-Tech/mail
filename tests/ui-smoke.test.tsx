@@ -48,7 +48,7 @@ if (!dom.window.matchMedia) {
 // Relative /api calls go to the Worker, with the signed-in cookie attached.
 // Same-origin in production (Worker route), so the browser code is unchanged.
 const realFetch = globalThis.fetch;
-globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
   if (url.startsWith('/api/')) {
     const headers = new Headers(init?.headers);
@@ -56,7 +56,24 @@ globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
     // Browsers send Origin on same-origin writes; the Worker's CSRF guard needs it.
     // jsdom does not add it, so we add it here to match the real browser.
     if (init?.method && init.method !== 'GET') headers.set('origin', APP_ORIGIN);
-    return realFetch(`${API}${url}`, { ...init, headers });
+    const res = await realFetch(`${API}${url}`, { ...init, headers });
+    // jsdom does not keep a cookie jar, so do what a browser would: remember
+    // rotated cookies (the account switcher relies on this to change identity).
+    const setCookie = res.headers.get('set-cookie');
+    if (setCookie) {
+      for (const pair of setCookie.split(/,(?=[^;]+?=)/)) {
+        const name = pair.split('=')[0].trim();
+        if (name && name.startsWith('gothwad_')) {
+          activeCookie = activeCookie
+            .split(';')
+            .map((c) => c.trim())
+            .filter((c) => c && !c.startsWith(`${name}=`))
+            .concat(pair.split(';')[0].trim())
+            .join('; ');
+        }
+      }
+    }
+    return res;
   }
   return realFetch(input as never, init);
 }) as typeof fetch;
@@ -228,6 +245,68 @@ test('a 503 session check shows the profile error with Retry and does not redire
     'Retry button is shown'
   );
   assert.equal(window.location.href, before, 'the browser was not sent to Accounts');
+
+  await act(async () => {
+    root.unmount();
+  });
+  document.body.innerHTML = '<div id="root"></div>';
+  activeCookie = GOOD_COOKIE;
+});
+
+test('the account switcher lists every signed-in account and switches in place', async () => {
+  activeCookie = GOOD_COOKIE;
+
+  // 1. The list itself: both accounts, with the unread count from Mail's D1.
+  const accounts = (await (await fetch('/api/mail/accounts')).json()) as {
+    activeId: string;
+    accounts: Array<{ id: string; email: string; username: string }>;
+    unread: Record<string, number>;
+  };
+  assert.equal(accounts.accounts.length, 2, 'the local Accounts stub has two accounts');
+  assert.equal(accounts.activeId, 'a');
+  assert.equal(typeof accounts.unread.bob, 'number');
+
+  const root = createRoot(document.getElementById('root')!);
+  await act(async () => {
+    root.render(createElement(App));
+  });
+  await waitFor(() => text().includes('Invoice for October'), 'alice inbox loaded');
+
+  // 2. Open the switcher from the header avatar.
+  const trigger = [...document.querySelectorAll('button')].find((b) =>
+    /Accounts \(2\)|User profile|Account details/.test(b.getAttribute('aria-label') || '')
+  );
+  assert.ok(trigger, 'account trigger exists');
+  await act(async () => {
+    (trigger as HTMLElement).click();
+  });
+  await waitFor(() => text().includes('bob@gothwadtech.com'), 'second account row');
+  assert.ok(text().includes('alice@gothwadtech.com'), 'active account row is listed');
+  assert.ok(text().includes('Add another account'), 'add-account entry exists');
+  assert.ok(text().includes('Gothwad Accounts'), 'sheet title reflects multiple accounts');
+
+  // 3. Switch. The row that is not active is a button around the bob address.
+  const row = [...document.querySelectorAll('button')].find(
+    (b) => b.textContent?.includes('bob@gothwadtech.com') && b.getAttribute('aria-current') === null
+  );
+  assert.ok(row, 'inactive account row is clickable');
+  await act(async () => {
+    (row as HTMLElement).click();
+  });
+
+  // 4. The sheet closes only after the switch resolved (bob's row in the open
+  //    sheet also contains his address, so wait for the close first).
+  await waitFor(() => !text().includes('Add another account'), 'switcher closed after switching');
+
+  // 5. The whole app is now bob: sidebar shows bob, the sheet is gone, and the
+  //    mailbox reloaded for bob (not alice's cached list).
+  await waitFor(() => text().includes('bob@gothwadtech.com'), 'app switched to bob');
+  assert.equal(
+    [...document.querySelectorAll('button')].some((b) => b.textContent?.includes('alice@gothwadtech.com')),
+    false,
+    'no alice row is left behind'
+  );
+  await waitFor(() => text().includes('Invoice for October'), 'bob inbox loaded');
 
   await act(async () => {
     root.unmount();

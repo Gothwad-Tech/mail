@@ -75,8 +75,13 @@ function clearReturnMarker(): void {
 export function useSession() {
   const [state, setState] = useState<SessionState>({ status: 'loading' });
 
-  const load = useCallback(() => {
-    setState({ status: 'loading' });
+  /**
+   * `silent` re-checks the session without the full-screen loading state.
+   * Used after switching accounts: the mailbox is about to be replaced, so
+   * flashing "Checking your account…" over the whole app looks like a reload.
+   */
+  const load = useCallback((opts: { silent?: boolean } = {}) => {
+    if (!opts.silent) setState({ status: 'loading' });
     mailApi
       .getSession()
       .then((info) => {
@@ -101,5 +106,21 @@ export function useSession() {
     load();
   }, [load]);
 
-  return { state, retry: load };
+  /** Re-read the session after the active account changed. */
+  const refresh = useCallback(async () => {
+    try {
+      const info = await mailApi.getSession();
+      setState({ status: 'ready', info });
+    } catch (err) {
+      const failure = classifySessionFailure(err, isAuthReturnUrl(window.location.href));
+      if (failure.kind === 'redirect') {
+        setState({ status: 'redirecting' });
+        window.location.replace(buildSigninUrl(failure.signinUrl, window.location.href));
+        return;
+      }
+      setState({ status: 'error', message: failure.message });
+    }
+  }, []);
+
+  return { state, retry: load, refresh };
 }

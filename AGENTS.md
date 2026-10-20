@@ -63,6 +63,12 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
 11c. **Keep repeated reads cheap.** `GET /api/mail/messages/:id` must keep its ETag/304 path:
    run the cheap row query first and decompress only when the validator does not match. Anything
    added to `DETAIL_COLUMNS` is read on every open, so keep it small.
+11e. **Never let an account cache cross accounts.** `App.tsx` keys `MailProvider` by username and
+   `switchAccount` clears the folder/detail caches before the next paint. Do not "optimise" that
+   away: one mailbox's rows shown to another account is a privacy bug.
+11f. **The account list belongs to Accounts.** Mail only proxies it (`worker/src/accounts.ts`).
+   Never store another account's credentials or session token in Mail. Unread counts may only be
+   computed for usernames Accounts just returned.
 11d. **Keep the shell responsive.** Use `100dvh` + flex `min-h-0` (no magic pixel heights),
    keep tap targets >= 44px, and keep `SettingsModal`/`ComposeModal` lazy-loaded so the first
    paint stays small.

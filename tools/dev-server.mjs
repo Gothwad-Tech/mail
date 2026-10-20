@@ -46,6 +46,43 @@ const env = {
   MAX_INBOUND_BYTES: '10485760',
 };
 
+// Local only: a two-account Accounts stub, so the Google-style switcher is
+// testable without the real Accounts service. The active account is a cookie
+// (`gothwad_active`), exactly like the contract in docs/ACCOUNTS_AGENT_PROMPT.md,
+// so a switch survives a reload and the rest of the Worker code is untouched.
+const LOCAL_ACCOUNTS = [
+  { id: 'a', username: 'alice', firstName: 'Alice', lastName: 'Sharma' },
+  { id: 'b', username: 'bob', firstName: 'Bob', lastName: 'Verma' },
+];
+
+function activeSlot(cookie) {
+  const match = /gothwad_active=([a-z])/.exec(cookie || '');
+  const id = match && match[1];
+  return LOCAL_ACCOUNTS.some((a) => a.id === id) ? id : 'a';
+}
+
+function accountsBody(activeId, slotIds) {
+  return {
+    activeId,
+    accounts: LOCAL_ACCOUNTS.filter((a) => slotIds.includes(a.id)).map((a) => ({
+      id: a.id,
+      username: a.username,
+      firstName: a.firstName,
+      lastName: a.lastName,
+      lastUsedAt: new Date().toISOString(),
+    })),
+  };
+}
+
+function accountsResponse(activeId, slotIds = LOCAL_ACCOUNTS.map((a) => a.id)) {
+  const res = Response.json(accountsBody(activeId, slotIds));
+  res.headers.append(
+    'set-cookie',
+    `gothwad_active=${activeId}; Path=/; SameSite=Lax`
+  );
+  return res;
+}
+
 // Local only: pretend Resend accepted the mail, and answer Accounts' session
 // endpoints locally so the signed-out / broken-session branches are testable.
 const realFetch = globalThis.fetch;
@@ -57,15 +94,40 @@ globalThis.fetch = async (input, init) => {
   if (url.startsWith(`${env.AUTH_HUB_URL}/api/auth/me`)) {
     const cookie = new Headers(init?.headers).get('cookie') || '';
     if (cookie.includes('gothwad_at=good')) {
+      const slot = LOCAL_ACCOUNTS.find((a) => a.id === activeSlot(cookie)) || LOCAL_ACCOUNTS[0];
       return Response.json({
         authenticated: true,
-        user: { username: 'alice', first_name: 'Alice', last_name: 'Sharma' },
+        user: { username: slot.username, first_name: slot.firstName, last_name: slot.lastName },
       });
     }
     if (cookie.includes('gothwad_at=no_username')) {
       return Response.json({ authenticated: true, user: { username: '' } });
     }
     return Response.json({ authenticated: false }, { status: 401 });
+  }
+  if (url.startsWith(`${env.AUTH_HUB_URL}/api/auth/accounts/`)) {
+    // POST /api/auth/accounts/:id/signout — drop that slot from the list.
+    const cookie = new Headers(init?.headers).get('cookie') || '';
+    const id = url.split('/api/auth/accounts/')[1].split('/')[0];
+    const remaining = LOCAL_ACCOUNTS.map((a) => a.id).filter((slot) => slot !== id);
+    const next = remaining.includes(activeSlot(cookie)) ? activeSlot(cookie) : remaining[0];
+    return accountsResponse(next || 'a', remaining);
+  }
+  if (url.startsWith(`${env.AUTH_HUB_URL}/api/auth/accounts`)) {
+    const cookie = new Headers(init?.headers).get('cookie') || '';
+    return accountsResponse(activeSlot(cookie));
+  }
+  if (url.startsWith(`${env.AUTH_HUB_URL}/api/auth/switch`)) {
+    let id = 'a';
+    try {
+      id = JSON.parse(String(init?.body || '{}')).id || 'a';
+    } catch {
+      id = 'a';
+    }
+    if (!LOCAL_ACCOUNTS.some((a) => a.id === id)) {
+      return Response.json({ error: 'account_not_signed_in' }, { status: 409 });
+    }
+    return accountsResponse(id);
   }
   if (url.startsWith(`${env.AUTH_HUB_URL}/api/oauth/userinfo`)) {
     return Response.json({ sub: '1', preferred_username: 'alice', name: 'Alice' });
@@ -81,7 +143,7 @@ async function seed() {
   const mailDb = await Db.from(env);
   // `pawan` = browser preview (dev bypass). `alice` = the user the UI smoke
   // test's local Accounts stub signs in as.
-  for (const username of [USERNAME, 'alice']) await seedMailbox(mailDb, username);
+  for (const username of [USERNAME, 'alice', 'bob']) await seedMailbox(mailDb, username);
 }
 
 async function seedMailbox(mailDb, username) {
@@ -189,6 +251,14 @@ const server = http.createServer(async (req, res) => {
       headers.set('origin', 'http://localhost:3000');
     }
 
+    // A request that carries any cookie is decided by the local Accounts stub
+    // above (so the signed-out branches are testable). The plain browser preview
+    // has no Accounts cookie, so give it the stub session instead of the dev
+    // bypass: that way the account switcher is visible locally, and the request
+    // still goes through the real cookie path the production browser uses.
+    const worksWithCookies = Boolean(req.headers.cookie);
+    if (!worksWithCookies) headers.set('cookie', 'gothwad_at=good');
+
     const url = `http://localhost:${PORT}${req.url}`;
     const request = new Request(url, {
       method: req.method,
@@ -196,11 +266,10 @@ const server = http.createServer(async (req, res) => {
       body: body && body.length > 0 ? body : undefined,
     });
 
-    // A request that carries any cookie is decided by the local Accounts stub
-    // above (so the signed-out branches are testable); everything else (the
-    // plain browser preview) uses the dev bypass and opens without sign-in.
-    const worksWithCookies = Boolean(req.headers.cookie);
-    const requestEnv = worksWithCookies ? { ...env, DEV_AUTH_USERNAME: undefined } : env;
+    // Every preview request now has a cookie (injected above when the browser
+    // had none), so the dev bypass must stay off: otherwise /api/session says
+    // one user while /api/mail/accounts says another.
+    const requestEnv = { ...env, DEV_AUTH_USERNAME: undefined };
 
     const response = await worker.fetch(request, requestEnv);
     res.statusCode = response.status;

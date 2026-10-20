@@ -205,6 +205,10 @@ All JSON. Everything except `/api/health` needs a signed-in session.
 | DELETE | `/api/mail/messages/:id` | Permanent delete. Only for items already in Trash. |
 | POST | `/api/mail/drafts` | Create or update a draft: `{ id?, to, cc, bcc, subject, body }`. |
 | DELETE | `/api/mail/drafts/:id` | Delete a draft. |
+| GET | `/api/mail/accounts` | Signed-in accounts for the switcher: `{ activeId, accounts[], unread{} }`. Empty + `unsupported: true` when Accounts has no multi-account API yet. |
+| POST | `/api/mail/accounts/switch` | `{ id }` → makes that account the active one. 409 `account_not_signed_in` if Accounts no longer has a session for it. |
+| POST | `/api/mail/accounts/signout` | `{ id }` → signs one account out; the active account moves to the next one, or the browser is signed out. |
+| GET | `/api/mail/accounts/add` | 302 to Accounts' sign-in in append mode (`?choose=1&add=1`). |
 | POST | `/api/mail/send` | Send: `{ to, cc?, bcc?, subject, body, draftId? }`. Returns 201 with `id`, `saved`, `remainingToday`. |
 
 Errors use one shape: `{ error, message }`. Malformed ids return 400, not found returns 404,
@@ -218,6 +222,47 @@ A write (POST/PATCH/DELETE) that uses cookies must:
 - send `Content-Type: application/json`. Otherwise **415**.
 
 Bearer-token requests skip the origin check, because they do not use cookies.
+
+## Multiple accounts (Google-style switcher)
+
+Mail shows one mailbox per request, but the browser can hold several *signed-in* accounts.
+Accounts owns that list (one session per account slot plus an active pointer); Mail mirrors it
+for the UI.
+
+```
+browser ──/api/mail/accounts────────► Mail Worker ──cookie──► Accounts /api/auth/accounts
+        ◄─ accounts + unread counts ─┤        ◄─ rotated Set-Cookie ─┘
+        ──/api/mail/accounts/switch──► (POST) ─────────────────► Accounts /api/auth/switch
+```
+
+Why a proxy instead of calling Accounts from the browser: no CORS, no third-party cookies, and
+the "401 means signed out" rule stays in one place (`worker/src/accounts.ts`).
+
+* **Unread per account** comes from Mail's D1 (`folder='inbox' AND is_read=0`), grouped in one
+  query — and only for usernames Accounts just confirmed, so it cannot be used to count
+  another mailbox.
+* **Emails are derived** (`username@APP_DOMAIN`), never taken from the upstream body.
+* **Switching clears every cache** before the next paint, and `App.tsx` keys `MailProvider` by
+  username, so a remount is guaranteed. Showing one account's inbox to another would be a
+  privacy leak, not just stale data.
+* **No reload**: switch → `/api/session` re-read → the provider remounts and the new inbox loads
+  (skeletons, then rows).
+* **Before Accounts ships the feature** its endpoint 404s, Mail returns `unsupported: true`, and
+  the sheet falls back to the single-account card. Deploying Mail first is safe.
+* **Add another account** is a normal navigation to
+  `{AUTH_SIGNIN_URL}/signin?choose=1&add=1&next=…`; the URL is built from config, never from the
+  request, so it cannot become an open redirect.
+* Keyboard: `Shift+A` opens the switcher; the avatar shows a `+n` bubble when more accounts are
+  signed in.
+
+The full contract for the Accounts side lives in [`ACCOUNTS_AGENT_PROMPT.md`](./ACCOUNTS_AGENT_PROMPT.md);
+the plan and acceptance tests are in [`MULTI_ACCOUNT_PLAN.md`](./MULTI_ACCOUNT_PLAN.md).
+
+### Local testing of the switcher
+
+`tools/dev-server.mjs` runs a two-account Accounts stub (alice + bob) where the active slot is
+the `gothwad_active` cookie. So `npm run preview:api` + `npm run dev` shows the real switcher, and
+`npm run test:ui` switches accounts end to end in jsdom.
 
 ## Frontend
 
