@@ -44,7 +44,8 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
 5. **No demo data in the production build.** No fake names, no mock threads.
    The only data is what the Worker returns.
 6. **Free tier only. Zero paid budget.** No paid services, no paid add-ons.
-7. **No polling loops.** Refresh is manual (or on user action).
+7. **No polling loops.** Refresh is manual (or on user action). A background revalidation of
+   a cached list is allowed only as the direct result of navigating to that folder.
 7b. **Never auto-delete starred mail or drafts.** Retention (`worker/src/retention.ts`) may
    trim unstarred inbox/sent overflow, purge Trash after 30 days, and enforce the per-mailbox
    quota, but `is_starred = 1` and `folder = 'drafts'` are always excluded. Keep it tested.
@@ -56,6 +57,15 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
 9. **Per-user daily send cap** (default 30, range 20–50). Config: `DAILY_SEND_LIMIT`.
 10. **Keep the existing visual design.** Replace mocks with API hooks; do not restyle.
 11. **Comment the "why" in code**, not the "what". Keep comments short and plain.
+11b. **Never cache mail in the service worker.** `vite.config.ts` excludes `/api/*` on
+   purpose: mail is private and the SW is shared across sessions. Client memory caches in
+   `MailContext` are fine (they die with the tab).
+11c. **Keep repeated reads cheap.** `GET /api/mail/messages/:id` must keep its ETag/304 path:
+   run the cheap row query first and decompress only when the validator does not match. Anything
+   added to `DETAIL_COLUMNS` is read on every open, so keep it small.
+11d. **Keep the shell responsive.** Use `100dvh` + flex `min-h-0` (no magic pixel heights),
+   keep tap targets >= 44px, and keep `SettingsModal`/`ComposeModal` lazy-loaded so the first
+   paint stays small.
 12. **Talk to the user in simple English or Hinglish.**
 13. **Update `TASK.md` every session.**
 14. **Never delete `AGENTS.md` once created.**

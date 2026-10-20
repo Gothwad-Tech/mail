@@ -36,8 +36,10 @@ export const EmailList: React.FC = () => {
     filteredEmails,
     isLoadingEmails,
     emailsError,
+    isRefreshing,
     hasMore,
     loadMore,
+    prefetchEmail,
     currentFolder,
     selectedIds,
     toggleSelectId,
@@ -219,7 +221,12 @@ export const EmailList: React.FC = () => {
       )}
 
       {/* ----- List ----- */}
-      <div className="flex-1 overflow-y-auto no-scrollbar divide-y divide-neutral-100 dark:divide-[#2e2e2e]">
+      <div className="flex-1 overflow-y-auto overscroll-contain no-scrollbar divide-y divide-neutral-100 dark:divide-[#2e2e2e]">
+        {/* Thin bar while a cached list revalidates: no layout jump, no spinner. */}
+        <div
+          className={`h-0.5 shrink-0 ${isRefreshing ? 'bg-[#0494f4]/70 animate-pulse' : 'bg-transparent'}`}
+          aria-hidden="true"
+        />
         {emailsError ? (
           <div className="flex flex-col items-center justify-center py-20 px-4 text-center">
             <AlertTriangle className="w-8 h-8 text-amber-500 mb-3" />
@@ -233,7 +240,22 @@ export const EmailList: React.FC = () => {
             </button>
           </div>
         ) : isLoadingEmails && filteredEmails.length === 0 ? (
-          <div className="flex items-center justify-center py-20 text-sm text-neutral-500">Loading…</div>
+          // Skeleton rows: the layout appears immediately, which feels much
+          // faster than a spinner on a slow phone connection.
+          <div aria-busy="true" aria-label="Loading messages">
+            {Array.from({ length: 7 }).map((_, i) => (
+              <div key={i} className="flex animate-pulse items-center gap-3 px-3 py-3 sm:px-4">
+                <div className="h-8 w-8 shrink-0 rounded-full bg-neutral-200 dark:bg-[#333333]" />
+                <div className="min-w-0 flex-1 space-y-2">
+                  <div className="flex items-center gap-3">
+                    <div className="h-3 w-1/3 rounded bg-neutral-200 dark:bg-[#333333]" />
+                    <div className="ml-auto h-3 w-10 rounded bg-neutral-100 dark:bg-[#2e2e2e]" />
+                  </div>
+                  <div className="h-3 w-4/5 rounded bg-neutral-100 dark:bg-[#2e2e2e]" />
+                </div>
+              </div>
+            ))}
+          </div>
         ) : filteredEmails.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 px-4 text-center">
             <div className="w-16 h-16 rounded-2xl bg-neutral-100 dark:bg-[#2a2a2a] flex items-center justify-center text-neutral-400 mb-4">
@@ -260,7 +282,16 @@ export const EmailList: React.FC = () => {
                 <div
                   key={email.id}
                   onClick={() => handleRowClick(email)}
-                  className={`group flex items-center gap-3 px-3 sm:px-4 py-2.5 min-h-[56px] cursor-pointer transition-colors ${
+                  // Warm the body before the tap lands: hovering (desktop) or
+                  // touching (mobile) means the user is about to open it.
+                  onMouseEnter={() => prefetchEmail(email.id)}
+                  onFocus={() => prefetchEmail(email.id)}
+                  onTouchStart={() => prefetchEmail(email.id)}
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleRowClick(email);
+                  }}
+                  className={`group flex items-center gap-3 px-3 sm:px-4 py-2.5 min-h-[60px] cursor-pointer transition-colors active:bg-neutral-100 dark:active:bg-[#2e2e2e] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#0494f4] ${
                     isActive
                       ? 'bg-[#0494f4]/10 dark:bg-[#0494f4]/15'
                       : isSelected
@@ -288,6 +319,12 @@ export const EmailList: React.FC = () => {
 
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline gap-2 min-w-0">
+                      {!email.isRead && (
+                        <span
+                          className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#0494f4]"
+                          aria-label="Unread"
+                        />
+                      )}
                       <span
                         className={`truncate text-sm ${
                           email.isRead ? 'text-neutral-700 dark:text-neutral-300' : 'font-bold text-neutral-900 dark:text-white'

@@ -22,13 +22,21 @@ const NAV_ITEMS: Array<{
 ];
 
 export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed }) => {
-  const { currentFolder, setCurrentFolder, openCompose, currentUser, sendRemainingToday, dailySendLimit, accountUrl } =
-    useMail();
+  const {
+    currentFolder,
+    setCurrentFolder,
+    openCompose,
+    currentUser,
+    sendRemainingToday,
+    dailySendLimit,
+    accountUrl,
+    unreadInboxCount,
+  } = useMail();
 
   return (
     <aside
-      className={`hidden md:flex flex-col h-[calc(100vh-4rem)] border-r border-neutral-200 dark:border-[#333333] bg-white dark:bg-[#212121] transition-all duration-200 shrink-0 select-none ${
-        isCollapsed ? 'w-18 px-2' : 'w-64 px-3'
+      className={`hidden h-full shrink-0 flex-col border-r border-neutral-200 bg-white transition-all duration-200 select-none md:flex dark:border-[#333333] dark:bg-[#212121] ${
+        isCollapsed ? 'w-[4.5rem] px-2' : 'w-64 px-3'
       }`}
     >
       {/* Compose Button */}
@@ -73,6 +81,15 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed }) => {
                   }`}
                 />
                 {!isCollapsed && <span className="text-sm truncate font-medium">{item.label}</span>}
+                {item.folder === 'inbox' && unreadInboxCount > 0 && (
+                  <span
+                    className={`ml-auto rounded-full bg-[#0494f4] px-1.5 text-[10px] font-bold leading-4 text-white ${
+                      isCollapsed ? 'absolute right-1 top-1' : ''
+                    }`}
+                  >
+                    {unreadInboxCount > 99 ? '99+' : unreadInboxCount}
+                  </span>
+                )}
               </div>
             </button>
           );

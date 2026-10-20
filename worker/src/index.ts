@@ -282,8 +282,16 @@ async function route(request: Request, env: Env, config: Config): Promise<Respon
     const session = await requireSession(request, config);
 
     if (kind === 'messages' && method === 'GET') {
-      const message = await mail.getMessage(await Db.from(env), session.username, id);
-      return json({ message });
+      const db = await Db.from(env);
+      // Cheap row first: if the browser already has this body, stop here and
+      // skip the gzip decompression entirely (304, no body).
+      const row = await mail.getMessageRow(db, session.username, id);
+      const etag = mail.messageEtag(row);
+      const cacheHeaders = { etag, 'cache-control': 'private, no-cache' };
+      if (mail.etagMatches(request.headers.get('if-none-match'), etag)) {
+        return new Response(null, { status: 304, headers: cacheHeaders });
+      }
+      return json({ message: await mail.toDetailDto(row) }, 200, cacheHeaders);
     }
 
     if (kind === 'messages' && method === 'PATCH') {
