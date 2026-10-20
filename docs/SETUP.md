@@ -160,6 +160,18 @@ The Worker name must stay **`mail`**. Workers Builds overrides the config name w
 `WRANGLER_CI_OVERRIDE_NAME`, so a mismatch still deploys from Git but makes local
 `wrangler` commands target the wrong Worker. Fix the file, never the dashboard.
 
+### Why `previews = {}` is in `worker/wrangler.toml`
+
+Workers Builds runs `npx wrangler deploy` on the production branch, but
+`npx wrangler preview` on **every other branch** (pull requests). `wrangler preview` refuses to
+start without a `previews` block, so every PR showed a failed **Workers Builds: mail** check
+while `main` stayed green. The block is intentionally **empty**: a Preview only gets the
+bindings listed inside it, so a branch build has **no D1 database and no secrets** and can
+never read or trim production mail. Production deploys ignore the block.
+
+Want real preview data later? Create a **separate** D1 database (e.g. `mail-preview`) and add
+its binding under `[previews]`. Never point previews at `mail`.
+
 ---
 
 ## 5. Retention: what the owner should know

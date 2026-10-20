@@ -33,6 +33,19 @@ compatibility_date = "2025-09-01"
 # default). Secrets are never deleted by a deploy either way.
 keep_vars = true
 
+# Worker Previews: Workers Builds runs `npx wrangler preview` (not `deploy`) for
+# every NON-production branch, i.e. for pull requests. That command refuses to
+# start unless the config has a `previews` block, which is why PR builds showed a
+# red "Workers Builds: mail" check while main stayed green.
+#
+# It is deliberately EMPTY: a Preview gets only the bindings listed here, so an
+# unreviewed branch build has NO D1 database and NO secrets. That is the point -
+# branch code must never be able to read or trim production mail. Production
+# deploys (`npx wrangler deploy`) ignore this block and keep the `DB` binding and
+# `[vars]` below. Give previews their own database only after creating a separate
+# D1 database (e.g. `mail-preview`) and never point this at `mail`.
+previews = {}
+
 # -----------------------------------------------------------------------------
 # Cloudflare D1 (the `mail` database created in the dashboard).
 # The Worker creates its own tables on the first request (idempotent), so a

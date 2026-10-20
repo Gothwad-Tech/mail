@@ -116,6 +116,14 @@ test('the config is 100% Cloudflare native: no Supabase URL or key names', () =>
   assert.doesNotMatch(code, /supabase\.co/i, 'no Supabase project URL may remain');
 });
 
+test('the previews block exists so pull-request builds can run wrangler preview', () => {
+  // Workers Builds runs `npx wrangler preview` for non-production branches and
+  // fails immediately without this block. It must stay EMPTY: a preview has to
+  // have no D1 binding, otherwise unreviewed branch code could touch real mail.
+  assert.match(RAW, /^previews\s*=\s*\{\s*\}\s*$/m, 'wrangler.toml needs an empty `previews = {}` block');
+  assert.doesNotMatch(RAW, /^\s*\[\[previews\./m, 'previews must not declare bindings (no real D1 in a preview)');
+});
+
 test('the Accounts hosts stay split: server calls vs browser links', () => {
   const hub = value('AUTH_HUB_URL');
   const signin = value('AUTH_SIGNIN_URL');

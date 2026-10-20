@@ -109,6 +109,11 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
   every deploy; secrets are not. The file is the source of truth for the vars it names.
   `npm run test:config` (`tests/worker-config.test.ts`) fails on a blank var, a missing
   `keep_vars`, a wrong/missing D1 binding, any Supabase setting, or a secret-shaped value.
+- Do **not** delete `previews = {}` from `worker/wrangler.toml`. Workers Builds runs
+  `npx wrangler preview` for every non-production branch, and that command refuses to start
+  without a `previews` block - which is why PR checks showed a red "Workers Builds: mail".
+  Keep it EMPTY: a preview then has no D1 binding and no secrets, so unreviewed branch code
+  can never read or trim production mail. `npm run test:config` guards this.
 - Do **not** rename the Worker in `worker/wrangler.toml`. The deployed Worker is `mail` in the
   dashboard, so the file must say `name = "mail"`. Workers Builds overrides the config name with
   `WRANGLER_CI_OVERRIDE_NAME`, so a mismatch still deploys fine from Git but makes
