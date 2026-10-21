@@ -10,6 +10,7 @@
 // =============================================================================
 
 import type { ComposeData, EmailFolder } from '../types/email';
+import { authUserHeaders } from './authuser';
 
 const API_BASE = '/api';
 
@@ -31,6 +32,15 @@ export interface SessionUser {
 
 export interface SessionInfo {
   user: SessionUser;
+  /** This tab's account index (/u/<n>/), 0..5. */
+  authuser: number;
+  /** Accounts slot id for that index ("a".."f"). */
+  activeId: string | null;
+  /** Every account signed in in this browser, in stable order. */
+  accounts: AccountSummary[];
+  /** username -> unread inbox count (Mail's D1). */
+  unread: Record<string, number>;
+  /** Accounts' profile page for the current account. */
   accountUrl: string;
   limits: { dailySendLimit: number; sendRemainingToday: number | null };
 }
@@ -67,15 +77,24 @@ export interface MailboxSettings {
 
 /** One signed-in Gothwad account, as listed by the Worker (see worker/src/accounts.ts). */
 export interface AccountSummary {
+  /** Accounts slot id ("a".."f"). */
   id: string;
+  /** Google-style index used in the URL: /u/<authuser>/. */
+  authuser: number;
   username: string;
   name: string | null;
+  firstName: string;
+  lastName: string;
   email: string;
+  avatarUrl: string | null;
+  /** Accounts' own profile page for this account. */
+  accountUrl: string;
   lastUsedAt: string | null;
 }
 
 export interface AccountsInfo {
   activeId: string | null;
+  authuser: number | null;
   accounts: AccountSummary[];
   /** username -> unread inbox count, computed in Mail's D1. */
   unread: Record<string, number>;
@@ -93,7 +112,9 @@ export class ApiError extends Error {
     public status: number,
     public code: string,
     message: string,
-    public signinUrl?: string
+    public signinUrl?: string,
+    /** 409 on a switch: Accounts' sign-in link for that exact slot. */
+    public reauthUrl?: string
   ) {
     super(message);
     this.name = 'ApiError';
@@ -101,7 +122,10 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
-  const headers: Record<string, string> = { accept: 'application/json' };
+  // Every call carries this tab's account index. That is what keeps /u/0 and
+  // /u/1 independent: the Worker forwards it to Accounts, which resolves that
+  // slot without touching the browser-wide active account.
+  const headers: Record<string, string> = { accept: 'application/json', ...authUserHeaders() };
   if (init.body !== undefined) headers['content-type'] = 'application/json';
 
   let res: Response;
@@ -117,7 +141,7 @@ async function request<T>(path: string, init: { method?: string; body?: unknown 
   }
 
   const data = (await res.json().catch(() => null)) as
-    | (Record<string, unknown> & { message?: string; error?: string; signinUrl?: string })
+    | (Record<string, unknown> & { message?: string; error?: string; signinUrl?: string; reauthUrl?: string })
     | null;
 
   if (!res.ok) {
@@ -125,7 +149,8 @@ async function request<T>(path: string, init: { method?: string; body?: unknown 
       res.status,
       data?.error || 'error',
       data?.message || `Request failed (${res.status}).`,
-      data?.signinUrl
+      data?.signinUrl,
+      data?.reauthUrl
     );
   }
   return data as T;
@@ -164,11 +189,18 @@ export const mailApi = {
   /** Signed-in accounts for the switcher (empty + unsupported before Accounts ships). */
   getAccounts: () => request<AccountsInfo>('/mail/accounts'),
 
-  switchAccount: (id: string) =>
-    request<AccountsInfo>('/mail/accounts/switch', { method: 'POST', body: { id } }),
+  switchAccount: (target: { id?: string; authuser?: number }) =>
+    request<AccountsInfo>('/mail/accounts/switch', { method: 'POST', body: target }),
 
   signOutAccount: (id: string) =>
-    request<AccountsInfo>('/mail/accounts/signout', { method: 'POST', body: { id } }),
+    request<AccountsInfo & { signedOutAll: boolean }>('/mail/accounts/signout', { method: 'POST', body: { id } }),
+
+  /** Accounts' re-auth link for one slot (used when a switch returns 409). */
+  reauthUrl: (authuser: number, username?: string) => {
+    const qs = new URLSearchParams({ login: '1', authuser: String(authuser), next: `/u/${authuser}/` });
+    if (username) qs.set('username', username);
+    return `https://accounts.gothwadtech.com/signin?${qs.toString()}`;
+  },
 
   send: (payload: { to: string[]; cc: string[]; bcc: string[]; subject: string; body: string; draftId?: string }) =>
     request<{ id: string | null; sent: true; saved: boolean; remainingToday: number }>('/mail/send', {

@@ -13,7 +13,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { EmailFolder, UserProfile } from '../types/email';
-import type { SessionUser } from '../services/mailApi';
+import type { AccountSummary, SessionUser } from '../services/mailApi';
 import { initials, toComposeData, toEmailMessage } from './mailHelpers';
 import {
   EMPTY_FILTER,
@@ -32,15 +32,29 @@ export const MailProvider: React.FC<{
   sendRemainingToday: number | null;
   dailySendLimit: number | null;
   accountUrl: string;
+  /** This tab's account index from /u/<n>/ (0..5). */
+  authuser: number;
+  /** Accounts slot id for that index. */
+  activeId: string | null;
+  /** Switcher list + unread counts, already returned by /api/session. */
+  accounts: AccountSummary[];
+  unread: Record<string, number>;
   /** Re-reads /api/session after the active account changed. */
   onSessionChanged: () => Promise<void>;
+  /** Paint a target account immediately (before the switch call answers). */
+  onSwitchAccount: (account: AccountSummary, all: AccountSummary[], unread: Record<string, number>) => void;
   children: React.ReactNode;
 }> = ({
   user,
   sendRemainingToday: initialRemaining,
   dailySendLimit,
   accountUrl,
+  authuser,
+  activeId,
+  accounts: initialAccounts,
+  unread: initialUnread,
   onSessionChanged,
+  onSwitchAccount,
   children,
 }) => {
   const [sendRemainingToday, setSendRemainingToday] = useState<number | null>(initialRemaining);
@@ -100,7 +114,8 @@ export const MailProvider: React.FC<{
   const dismissToast = useCallback(() => setToast(null), []);
 
   // ----- The composed stores ------------------------------------------------
-  const mailbox = useMailbox({ showToast });
+  // The slot id scopes the mailbox cache: /u/0 and /u/1 never share a list.
+  const mailbox = useMailbox({ showToast, accountKey: activeId ?? `u${authuser}` });
 
   const compose = useCompose({
     showToast,
@@ -116,12 +131,27 @@ export const MailProvider: React.FC<{
     showToast,
   });
 
+  /**
+   * Before switching, the open draft must be saved under the account that owns
+   * it: the fetch carries the CURRENT /u/<n>/ header, and only then does the URL
+   * change. A draft from account A can therefore never land in account B.
+   */
+  const prepareForAccountSwitch = useCallback(async () => {
+    if (!compose.composeState.isOpen) return;
+    compose.saveDraft(compose.composeState.data);
+    await compose.flushDrafts();
+    compose.closeCompose();
+    showToast('Draft saved');
+  }, [compose, showToast]);
+
   const accounts = useAccountsSwitcher({
     showToast,
-    closeCompose: compose.closeCompose,
+    currentFolder: mailbox.currentFolder,
+    prepareForAccountSwitch,
     resetForAccountSwitch: mailbox.resetForAccountSwitch,
-    resetForAccountSignOut: mailbox.resetForAccountSignOut,
     onSessionChanged,
+    onSwitchAccount,
+    initial: { activeId, authuser, accounts: initialAccounts, unread: initialUnread },
   });
 
   // ----- Search -------------------------------------------------------------
@@ -229,7 +259,7 @@ export const MailProvider: React.FC<{
     refreshAccounts: accounts.refreshAccounts,
     switchAccount: accounts.switchAccount,
     signOutAccount: accounts.signOutAccount,
-    addAccountUrl: '/api/mail/accounts/add',
+    addAccountUrl: accounts.addAccountUrl,
     toast,
     dismissToast,
     showToast,

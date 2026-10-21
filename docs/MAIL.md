@@ -258,6 +258,39 @@ the "401 means signed out" rule stays in one place (`worker/src/accounts.ts`).
 The full contract for the Accounts side lives in [`ACCOUNTS_AGENT_PROMPT.md`](./ACCOUNTS_AGENT_PROMPT.md);
 the plan and acceptance tests are in [`MULTI_ACCOUNT_PLAN.md`](./MULTI_ACCOUNT_PLAN.md).
 
+### One account per tab: the URL is the state
+
+Gmail's trick, copied exactly: the account lives in the **path**, the folder in the **hash**.
+
+```
+/u/0/          /u/1/#sent      /u/2/#drafts
+mail/u/1/  →   /u/1/           (alias, rewritten on boot)
+/?authuser=1 → /u/1/#inbox     (alias: the Gmail post-sign-in URL)
+/?folder=starred → /u/0/#starred
+```
+
+* `normalizeAuthUserUrl()` runs once on boot: it reads the index from path or query, clamps it
+  to 0..5, and rewrites the address bar with `replaceState` (no history entry). Query params
+  that are not part of routing (`compose=1`, `__mail_auth_return=1`) ride along, so a one-shot
+  action is never eaten by the rewrite.
+* `writeFolderToUrl()` only touches the hash, so moving between Inbox and Sent never changes
+  the account.
+* `navigateToAccount()` pushes `/u/<n>/#<folder>` and a `popstate` listener treats Back/Forward
+  as an account switch, so browser navigation behaves like the switcher.
+* Every API call spreads `authUserHeaders()` → `X-Gothwad-Authuser: <n>`. The Worker validates
+  it and forwards it to Accounts as the tab selector, so **two tabs of the same browser**, one
+  cookie jar, two different mailboxes. Reading a slot never rotates another tab's session.
+* `MailProvider` is keyed by the slot id, and mailbox caches are per slot
+  (`src/services/mailboxCache.ts`). A switch therefore mounts an empty tree for the new account
+  and paints its cached list second: a row of account A cannot survive into account B's frame.
+  The UI test asserts this frame by frame.
+* Switching is optimistic: draft flush → URL + session update (cached mailbox, <16 ms) →
+  `POST /api/mail/accounts/switch` in the background. A `409` means that slot was revoked
+  elsewhere; the tab is sent to `reauthUrl` for exactly that account instead of being signed out.
+* Deep links need the host to serve `index.html`: `public/_redirects` (`/u/*` and `/mail/u/*`,
+  200) for Pages, `appType: 'spa'` for the dev server. Assets are root-relative everywhere, so
+  `/u/1/` loads them — `tests/assets.test.ts` walks the HTML and fails on a relative `src`.
+
 ### Local testing of the switcher
 
 `tools/dev-server.mjs` runs a two-account Accounts stub (alice + bob) where the active slot is

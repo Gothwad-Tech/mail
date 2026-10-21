@@ -153,7 +153,30 @@ Rules for B1:
 
 ## 6. Acceptance tests (must all pass before "done")
 
-Mail-side (local, against a stub Accounts that implements the contract):
+**Status: green.** Each item below names the automated test that now holds it. Local run:
+`npm test` → 141 tests (13 of them end-to-end UI), plus `npm run lint`, `npm run build` and
+`npx wrangler deploy --dry-run --config worker/wrangler.toml`.
+
+| # | Test |
+|---|------|
+| 1 | `tests/ui-switcher.test.tsx` — list, active row, unread pills |
+| 2 | `tests/ui-switcher.test.tsx` — "paint order" (MutationObserver, every frame) |
+| 3 | `worker/test/accounts.test.ts` — 409 → `reauthUrl`; `useAccountsSwitcher` redirects |
+| 4 | `worker/test/accounts.test.ts` — upstream 404 → `unsupported: true` |
+| 5 | `worker/test/accounts.test.ts` — 503 keeps the last known list |
+| 6 | `worker/test/accounts.test.ts` — `add` builds `/signin?add=1&authuser=n+1&next=/u/n+1/` |
+| 7 | `tests/ui-switcher.test.tsx` — signing out the inactive account |
+| 8 | `tests/ui-switcher.test.tsx` — signing out the shown account hops to the promoted one |
+| 9 | `worker/test/accounts.test.ts` — signout of the last slot reports `signedOutAll` |
+| 10 | `tests/ui-switcher.test.tsx` — `Shift+A`, `↑/↓`, `Enter`, `Esc` |
+| 11 | `tests/ui-switcher.test.tsx` — 390×844 and 1440×900 class contract |
+| 12 | `tests/ui-switcher.test.tsx` (web storage) + `tests/assets.test.ts` (SW never caches `/api`) |
+
+Extra coverage added with the URL work: `tests/routing.test.ts` (`/u/n/`, aliases, hash folders,
+one-shot params, Back/Forward), `tests/assets.test.ts` (root-relative assets, single manifest,
+Pages rewrites), `worker/test/multitab.test.ts` (two tabs reading and sending concurrently).
+
+Original list, kept for reference:
 
 1. Two accounts in the list, correct active row, correct unread pills.
 2. Switch `a → b`: exactly one `POST`, `folderCacheRef`/`detailCacheRef` empty, list painted from

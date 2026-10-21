@@ -1,0 +1,15 @@
+# Cloudflare Pages headers. HTML and JS modules must never be served stale after
+# a deploy (the service worker handles offline), so they revalidate every time.
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Cache-Control: public, max-age=0, must-revalidate
+
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+/assets/*
+  Cache-Control: public, max-age=0, must-revalidate
+
+/manifest.json
+  Cache-Control: public, max-age=0, must-revalidate

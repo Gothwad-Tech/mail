@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { X, Settings, Sun, Moon, ExternalLink, ShieldCheck, Check, Plus, LogOut, Loader2 } from 'lucide-react';
 import { useMail } from '../context/MailContext';
 import { PWAInstallButton } from './PWAInstallButton';
@@ -46,10 +46,54 @@ export const AccountSheet: React.FC<AccountSheetProps> = ({ isOpen, onClose }) =
   // Signing out the last account ends the whole session, so ask first.
   const [pendingSignOut, setPendingSignOut] = useState<string | null>(null);
 
-  if (!isOpen) return null;
+  // Keyboard: the sheet is a small listbox. Arrow keys move between account
+  // rows, Enter/Space activate (native button behaviour), Esc closes — the same
+  // keys Gmail's switcher answers to.
+  const rowRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const sheetRef = useRef<HTMLDivElement | null>(null);
 
   const hasSwitcher = accounts.length > 0;
   const isLastAccount = accounts.length === 1;
+
+  // Focus the active row when the sheet opens, so arrow keys start from it.
+  useEffect(() => {
+    if (!isOpen) return;
+    const index = Math.max(
+      0,
+      accounts.findIndex((account) => account.id === activeAccountId)
+    );
+    const timer = setTimeout(() => rowRefs.current[index]?.focus(), 0);
+    return () => clearTimeout(timer);
+  }, [isOpen, accounts, activeAccountId]);
+
+  const moveFocus = useCallback(
+    (from: number, step: number) => {
+      const list = rowRefs.current.filter(Boolean) as HTMLButtonElement[];
+      if (list.length === 0) return;
+      const current = list.indexOf(rowRefs.current[from] as HTMLButtonElement);
+      const next = (Math.max(0, current) + step + list.length) % list.length;
+      list[next].focus();
+    },
+    []
+  );
+
+  const onSheetKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+        return;
+      }
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      const from = rowRefs.current.findIndex((row) => row === document.activeElement);
+      if (from < 0) return; // not in the list: let the browser scroll
+      e.preventDefault();
+      moveFocus(from, e.key === 'ArrowDown' ? 1 : -1);
+    },
+    [moveFocus, onClose]
+  );
+
+  if (!isOpen) return null;
 
   const handleSignOut = async (account: AccountSummary) => {
     if (isLastAccount && pendingSignOut !== account.id) {
@@ -67,7 +111,14 @@ export const AccountSheet: React.FC<AccountSheetProps> = ({ isOpen, onClose }) =
       <div className="fixed inset-0" onClick={onClose} />
 
       {/* Surface */}
-      <div className="relative z-10 w-full max-h-[90dvh] overflow-y-auto overscroll-contain rounded-t-3xl border border-neutral-200 bg-white p-5 shadow-2xl animate-in slide-in-from-bottom duration-200 sm:max-w-md sm:rounded-2xl dark:border-[#383838] dark:bg-[#212121]">
+      <div
+        ref={sheetRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Gothwad Accounts"
+        onKeyDown={onSheetKeyDown}
+        className="relative z-10 max-h-[90dvh] w-full overflow-y-auto overscroll-contain rounded-t-3xl border border-neutral-200 bg-white p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-2xl animate-in slide-in-from-bottom duration-200 sm:max-w-md sm:rounded-2xl dark:border-[#383838] dark:bg-[#212121]"
+      >
         {/* Grab handle on mobile */}
         <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-neutral-300 sm:hidden dark:bg-neutral-600" />
 
@@ -89,7 +140,7 @@ export const AccountSheet: React.FC<AccountSheetProps> = ({ isOpen, onClose }) =
         {hasSwitcher ? (
           <div className="py-3">
             <ul className="space-y-1" aria-label="Signed-in accounts">
-              {accounts.map((account) => {
+              {accounts.map((account, index) => {
                 const isActive = account.id === activeAccountId;
                 const isBusy = switchingAccountId === account.id;
                 const unread = accountUnread[account.username] ?? 0;
@@ -104,6 +155,10 @@ export const AccountSheet: React.FC<AccountSheetProps> = ({ isOpen, onClose }) =
                     >
                       <button
                         type="button"
+                        ref={(el) => {
+                          rowRefs.current[index] = el;
+                        }}
+                        tabIndex={isActive ? 0 : -1}
                         onClick={() => {
                           if (isActive || isBusy) return;
                           void switchAccount(account.id).then((ok) => {

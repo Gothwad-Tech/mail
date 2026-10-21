@@ -9,6 +9,7 @@ import { MobileDrawer } from './components/MobileDrawer';
 import { Toast } from './components/Toast';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { useSession } from './hooks/useSession';
+import { folderFromHash, hashForFolder } from './services/authuser';
 
 // Compose and Settings are only needed after a tap. Loading them on demand keeps
 // the first paint (inbox) small.
@@ -32,26 +33,41 @@ const MainLayout: React.FC = () => {
     composeState,
     unreadInboxCount,
     isSettingsModalOpen,
+    currentFolder,
     setCurrentFolder,
   } = useMail();
 
-  // PWA shortcuts / deep links: /?folder=starred or /?compose=1. Applied once,
-  // then removed from the address bar so a reload does not repeat it.
+  // The folder lives in the URL hash (`/u/1/#sent`), so a refresh, a shared link
+  // and Back/Forward all land on the same folder of the same account.
   useEffect(() => {
+    const fromHash = folderFromHash();
+    if (fromHash !== 'inbox') setCurrentFolder(fromHash);
     const params = new URLSearchParams(window.location.search);
-    const folder = params.get('folder');
-    const valid = ['inbox', 'starred', 'sent', 'drafts', 'trash'];
-    if (folder && valid.includes(folder)) setCurrentFolder(folder as never);
-    if (params.get('compose') === '1') openCompose();
-    if (folder || params.has('compose')) {
-      params.delete('folder');
+    if (params.get('compose') === '1') {
+      openCompose();
       params.delete('compose');
       const qs = params.toString();
-      window.history.replaceState(window.history.state, '', `${window.location.pathname}${qs ? `?${qs}` : ''}`);
+      window.history.replaceState(
+        window.history.state,
+        '',
+        `${window.location.pathname}${qs ? `?${qs}` : ''}${window.location.hash}`
+      );
     }
-    // Intentionally once, on mount.
+    // Intentionally once, on mount: the URL is the input.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Keep the hash in step with the folder the user is looking at.
+  useEffect(() => {
+    const next = hashForFolder(currentFolder);
+    if (window.location.hash !== next) {
+      window.history.replaceState(
+        window.history.state,
+        '',
+        `${window.location.pathname}${window.location.search}${next}`
+      );
+    }
+  }, [currentFolder]);
 
   // Unread count in the tab title, like every mail app. Only the inbox counts.
   useEffect(() => {
@@ -196,7 +212,7 @@ const Screen: React.FC<{ title: string; detail?: string; onRetry?: () => void }>
 
 export default function App() {
   // Auth gate: nothing private renders until the Worker confirms the Accounts session.
-  const { state, retry, refresh } = useSession();
+  const { state, retry, refresh, applyAccount } = useSession();
 
   if (state.status === 'loading') return <Screen title="Checking your Gothwad account…" />;
   if (state.status === 'redirecting') return <Screen title="Redirecting you to sign in…" />;
@@ -207,14 +223,21 @@ export default function App() {
   const { info } = state;
   return (
     <MailProvider
-      // Keyed by username: switching accounts remounts the provider, so no
-      // cached list, detail body or draft can leak across accounts.
-      key={info.user.username}
+      // Keyed by account slot: switching remounts the provider, so no cached
+      // list, detail body or draft can leak across accounts. The mailbox cache
+      // itself is per slot (services/mailboxCache.ts), so the remount still
+      // paints that account's last inbox instantly.
+      key={info.activeId ?? `u${info.authuser}`}
       user={info.user}
       sendRemainingToday={info.limits.sendRemainingToday}
       dailySendLimit={info.limits.dailySendLimit}
       accountUrl={info.accountUrl}
+      authuser={info.authuser}
+      activeId={info.activeId}
+      accounts={info.accounts}
+      unread={info.unread}
       onSessionChanged={refresh}
+      onSwitchAccount={applyAccount}
     >
       <MainLayout />
     </MailProvider>

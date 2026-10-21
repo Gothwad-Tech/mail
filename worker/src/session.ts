@@ -27,6 +27,8 @@
 
 import type { Config } from './config';
 import { HttpError } from './http';
+import { authUserFromRequest, authUserIndex } from './authuser';
+import { parseAccounts, pickAccount, type PublicAccount } from './accountList';
 
 // Codes Mail returns when the Accounts handoff itself is broken. The web app
 // shows a retry message for these and must never redirect to Accounts.
@@ -38,6 +40,14 @@ export interface Session {
   username: string;
   email: string;
   name: string | null;
+  /** Google-style tab account index (0..5) this request belongs to. */
+  authuser: number;
+  /** Accounts' slot id for that index ("a".."f"), null for bearer/dev. */
+  activeId: string | null;
+  /** Every account signed in in this browser, in stable 0..n order. */
+  accounts: PublicAccount[];
+  /** Accounts' own profile page for THIS account. */
+  accountUrl: string;
   source: 'cookie' | 'bearer' | 'dev';
 }
 
@@ -87,7 +97,16 @@ export async function resolveSession(request: Request, config: Config): Promise<
   if (config.devAuthUsername) {
     const username = normalizeUsername(config.devAuthUsername);
     if (!username) throw new HttpError(500, 'bad_dev_user', 'DEV_AUTH_USERNAME is invalid.');
-    return { username, email: deriveEmail(username, config.appDomain), name: null, source: 'dev' };
+    return {
+      username,
+      email: deriveEmail(username, config.appDomain),
+      name: null,
+      authuser: 0,
+      activeId: null,
+      accounts: [],
+      accountUrl: `${config.authSigninUrl}/me`,
+      source: 'dev',
+    };
   }
 
   const cookie = request.headers.get('cookie');
@@ -108,6 +127,9 @@ export async function resolveSession(request: Request, config: Config): Promise<
 interface AccountsMeBody {
   authenticated?: boolean;
   user?: { username?: unknown; first_name?: unknown; last_name?: unknown };
+  activeId?: unknown;
+  authuser?: unknown;
+  accounts?: unknown;
 }
 
 const AUTH_UNAVAILABLE_MESSAGE = 'Accounts is not reachable right now.';
@@ -117,7 +139,13 @@ const ACCOUNTS_USER_INVALID_MESSAGE =
   'Your Gothwad Account is signed in, but Mail could not read your username. Try again in a minute, or contact the admin.';
 
 async function resolveCookie(request: Request, cookie: string, config: Config): Promise<Session | null> {
-  const res = await upstream(`${config.authHubUrl}/api/auth/me`, { cookie, accept: 'application/json' });
+  // The per-tab selector is what makes /u/0 and /u/1 independent: Accounts
+  // resolves that slot and does NOT touch the browser-wide active cookie.
+  const selector = authUserFromRequest(request);
+  const headers: Record<string, string> = { cookie, accept: 'application/json' };
+  if (selector) headers['x-gothwad-authuser'] = selector;
+
+  const res = await upstream(`${config.authHubUrl}/api/auth/me`, headers);
   keepAccountsCookies(request, res);
 
   // Only 401/403 means Accounts checked and the user really is signed out.
@@ -141,7 +169,27 @@ async function resolveCookie(request: Request, cookie: string, config: Config): 
   }
 
   const name = [body.user?.first_name, body.user?.last_name].filter(Boolean).join(' ').trim() || null;
-  return { username, email: deriveEmail(username, config.appDomain), name, source: 'cookie' };
+
+  // One upstream call now also returns the switcher list (Accounts v2.3), so
+  // /api/session can boot the whole app without a second round trip.
+  const accounts = parseAccounts(body.accounts, config, (n) => `${config.authSigninUrl}/u/${n}/me`);
+  const upstreamIndex = typeof body.authuser === 'number' ? body.authuser : authUserIndex(selector);
+  // Prefer the slot Accounts actually resolved; fall back to the list position.
+  const activeId = typeof body.activeId === 'string' ? body.activeId.toLowerCase() : null;
+  const matched = accounts.findIndex((a) => a.id === activeId);
+  const authuser = matched >= 0 ? matched : Math.min(Math.max(upstreamIndex, 0), Math.max(accounts.length - 1, 0));
+  const account = pickAccount(accounts, authuser);
+
+  return {
+    username,
+    email: deriveEmail(username, config.appDomain),
+    name,
+    authuser,
+    activeId: account?.id ?? activeId,
+    accounts,
+    accountUrl: account?.accountUrl ?? `${config.authSigninUrl}/u/${authuser}/me`,
+    source: 'cookie',
+  };
 }
 
 async function resolveBearer(authHeader: string, config: Config): Promise<Session | null> {
@@ -166,7 +214,16 @@ async function resolveBearer(authHeader: string, config: Config): Promise<Sessio
     warnUpstreamFailure(ACCOUNTS_USER_INVALID, res);
     throw new HttpError(503, ACCOUNTS_USER_INVALID, ACCOUNTS_USER_INVALID_MESSAGE);
   }
-  return { username, email: deriveEmail(username, config.appDomain), name: body.name ?? null, source: 'bearer' };
+  return {
+    username,
+    email: deriveEmail(username, config.appDomain),
+    name: body.name ?? null,
+    authuser: 0,
+    activeId: null,
+    accounts: [],
+    accountUrl: `${config.authSigninUrl}/me`,
+    source: 'bearer',
+  };
 }
 
 /** 401/403 only: Accounts looked at the credentials and said "not signed in". */
