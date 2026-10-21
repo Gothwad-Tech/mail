@@ -12,8 +12,9 @@
 // =============================================================================
 
 import { useCallback, useEffect, useState } from 'react';
-import { API_ERROR, ApiError, mailApi, SessionInfo } from '../services/mailApi';
+import { API_ERROR, ApiError, mailApi, SessionInfo, type AccountSummary } from '../services/mailApi';
 import { buildSigninUrl, clearAuthReturnMarker, isAuthReturnUrl } from '../services/authRedirect';
+import { normalizeAuthUserUrl, onUrlAccountChange } from '../services/authuser';
 
 export { buildSigninUrl } from '../services/authRedirect';
 
@@ -81,6 +82,10 @@ export function useSession() {
    * flashing "Checking your account…" over the whole app looks like a reload.
    */
   const load = useCallback((opts: { silent?: boolean } = {}) => {
+    // `/mail/u/1/#sent`, `/?authuser=1`, `/?u=1` all become /u/1/#sent before
+    // the first fetch, so every later request and every refresh uses the same
+    // canonical URL.
+    normalizeAuthUserUrl();
     if (!opts.silent) setState({ status: 'loading' });
     mailApi
       .getSession()
@@ -106,6 +111,30 @@ export function useSession() {
     load();
   }, [load]);
 
+  /**
+   * Applies an account straight from the switcher list: no network, no reload.
+   * The URL has already been pushed to /u/<n>/, so the provider remounts with
+   * that account's cached mailbox in the same frame (<16ms). The background
+   * switch call then confirms it and rotates the cookies.
+   */
+  const applyAccount = useCallback((account: AccountSummary, all: AccountSummary[], unread: Record<string, number>) => {
+    setState((prev) => {
+      if (prev.status !== 'ready') return prev;
+      return {
+        status: 'ready',
+        info: {
+          ...prev.info,
+          user: { username: account.username, email: account.email, name: account.name },
+          authuser: account.authuser,
+          activeId: account.id,
+          accounts: all,
+          unread,
+          accountUrl: account.accountUrl,
+        },
+      };
+    });
+  }, []);
+
   /** Re-read the session after the active account changed. */
   const refresh = useCallback(async () => {
     try {
@@ -122,5 +151,11 @@ export function useSession() {
     }
   }, []);
 
-  return { state, retry: load, refresh };
+  /**
+   * Back/Forward between /u/0/ and /u/1/. Reading a slot through the selector
+   * does NOT change the browser-wide active account, so other tabs are safe.
+   */
+  useEffect(() => onUrlAccountChange(() => void refresh()), [refresh]);
+
+  return { state, retry: load, refresh, applyAccount };
 }

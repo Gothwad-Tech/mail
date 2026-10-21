@@ -11,8 +11,21 @@ import type { EmailFolder, EmailMessage } from '../types/email';
 import { mailApi } from '../services/mailApi';
 import { errorText, toEmailMessage } from './mailHelpers';
 import { PAGE_SIZE } from './mailContextTypes';
+import { folderFromHash, writeFolderToUrl } from '../services/authuser';
+import { accountMailboxCache } from '../services/mailboxCache';
 
-export function useMailbox({ showToast }: { showToast: (message: string) => void }) {
+/**
+ * `accountKey` is the Accounts slot id. Each account's lists and opened messages
+ * live in a module-level cache under that key, so switching back to an account
+ * paints its last inbox in the same frame instead of waiting for the network.
+ */
+export function useMailbox({
+  showToast,
+  accountKey,
+}: {
+  showToast: (message: string) => void;
+  accountKey: string;
+}) {
   const [emails, setEmails] = useState<EmailMessage[]>([]);
   const [isLoadingEmails, setIsLoadingEmails] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -21,13 +34,14 @@ export function useMailbox({ showToast }: { showToast: (message: string) => void
 
   // Per-folder memory cache: switching back to a folder shows the last list
   // immediately (no spinner, no request) and then revalidates in the
-  // background. Kept in refs so a background refresh never re-renders twice.
-  const folderCacheRef = useRef(
-    new Map<EmailFolder, { emails: EmailMessage[]; hasMore: boolean; at: number }>()
-  );
-  const detailCacheRef = useRef(new Map<string, EmailMessage>());
-  const prefetchingRef = useRef(new Set<string>());
-  const [currentFolder, setCurrentFolderState] = useState<EmailFolder>('inbox');
+  // background. The maps come from the per-account cache, so a provider remount
+  // after an account switch starts warm for THAT account only.
+  const accountCache = accountMailboxCache(accountKey);
+  const folderCacheRef = useRef(accountCache.folders);
+  const detailCacheRef = useRef(accountCache.details);
+  const prefetchingRef = useRef(accountCache.prefetching);
+  // The folder is in the URL hash (`/u/1/#sent`), so a refresh lands here.
+  const [currentFolder, setCurrentFolderState] = useState<EmailFolder>(() => folderFromHash());
 
   const [selectedEmailId, setSelectedEmailId] = useState<string | null>(null);
   const [openedMessage, setOpenedMessage] = useState<EmailMessage | null>(null);
@@ -84,6 +98,7 @@ export function useMailbox({ showToast }: { showToast: (message: string) => void
   );
 
   useEffect(() => {
+    // Paint the cached folder immediately when this account was visited before.
     void loadFolder(currentFolder);
   }, [currentFolder, loadFolder]);
 
@@ -111,6 +126,8 @@ export function useMailbox({ showToast }: { showToast: (message: string) => void
     setCurrentFolderState(folder);
     setSelectedEmailId(null);
     setSelectedIds([]);
+    // The URL is the state: /u/<account>/#<folder> survives refresh and sharing.
+    writeFolderToUrl(folder);
   }, []);
 
   // ----- Opening a message ---------------------------------------------------

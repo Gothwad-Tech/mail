@@ -174,6 +174,7 @@ export function useCompose({ showToast, currentFolder, loadFolder, setSendRemain
     setComposeData,
     sendEmail,
     saveDraft,
+    flushDrafts,
   };
 }
 

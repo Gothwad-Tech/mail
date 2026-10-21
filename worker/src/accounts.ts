@@ -1,104 +1,110 @@
 // =============================================================================
-// Account switcher: multiple signed-in Gothwad accounts, Google style.
+// Account switcher, Google style: Mail's proxy in front of Gothwad Accounts.
 //
-// Mail is NOT the source of truth here. Accounts owns the list of signed-in
-// accounts (one session cookie per account plus an "active" pointer). Mail only:
+// Accounts owns the list (one session cookie per slot `a`..`f`, plus the browser
+// "active" pointer). Mail never stores another account's credentials. It only:
 //
-//   1. proxies three calls to Accounts with the browser's cookie, and forwards
-//      the rotated Set-Cookie headers back (session.ts already does this for the
-//      session check, so we reuse that path),
-//   2. adds the per-account unread count from Mail's own D1 table.
+//   1. proxies the calls with the browser's cookies AND the tab's
+//      `X-Gothwad-Authuser` selector, so /u/0 and /u/1 tabs stay independent,
+//   2. forwards every rotated Set-Cookie (via session.ts) — dropping them would
+//      sign the browser out of Accounts,
+//   3. adds the per-account unread counts from Mail's own D1.
 //
-// Why a proxy instead of calling Accounts from the browser: no CORS, no
-// third-party cookies, and the Worker can keep the "401 only means signed out"
-// rule that stops the sign-in chooser from looping.
+// Upstream contract (live, Accounts v2.3 on AUTH_HUB_URL):
+//   GET  /api/auth/accounts                 { activeId, authuser, accounts }
+//   POST /api/auth/switch  {id}|{authuser}  { ok, activeId, authuser, user, accounts }
+//   POST /api/auth/accounts/:id/signout     { ok, signedOutAll, activeId, authuser, accounts }
+//   GET  /api/auth/switch?authuser=&next=   first-party redirect (browser only)
 //
-// Why the switcher is invisible when Accounts has not deployed the feature:
-// Accounts answers 404, we return `unsupported: true`, and the UI hides the
-// switcher. Mail ships safely first and lights up on its own afterwards.
+// The two POSTs require an `Origin` header upstream (CSRF), so the browser's
+// origin is forwarded as-is; `assertSafeWrite` has already checked it.
 // =============================================================================
 
 import type { Config, Env } from './config';
-import { Db } from './db';
 import { HttpError } from './http';
-import { deriveEmail, keepAccountsCookies, normalizeUsername, type Session } from './session';
-
-export interface AccountSummary {
-  /** Accounts' slot id ("a".."f"). Opaque to Mail, only echoed back. */
-  id: string;
-  username: string;
-  name: string | null;
-  email: string;
-  lastUsedAt: string | null;
-}
+import { normalizeAuthUser } from './authuser';
+import { keepAccountsCookies, type Session } from './session';
+import { parseAccounts, unreadCounts, type PublicAccount } from './accountList';
 
 export interface AccountsPayload {
   activeId: string | null;
-  accounts: AccountSummary[];
+  /** Index of the active account (0..5) — the /u/<n>/ the app should show. */
+  authuser: number | null;
+  accounts: PublicAccount[];
   /** username -> unread inbox count, from Mail's D1. */
   unread: Record<string, number>;
-  /** True when Accounts does not have the multi-account API yet (404). */
+  /** Accounts does not have the multi-account API (404): hide the switcher. */
   unsupported?: true;
 }
 
-/** Accounts allows a handful of slots per browser; keep the cap the same. */
-const MAX_ACCOUNTS = 6;
-/** Slot ids are single lowercase letters. Anything else is not ours. */
-const SLOT_RE = /^[a-z]$/;
 const UPSTREAM_TIMEOUT_MS = 5000;
-
 const ACCOUNTS_MISSING = 'mail_accounts_unsupported';
 
-export function parseSlotId(raw: unknown): string {
-  const id = typeof raw === 'string' ? raw.trim() : '';
-  if (!SLOT_RE.test(id)) {
+/** True when the body names an account by slot id or by authuser index. */
+export interface SwitchRequest {
+  id?: string;
+  /** Numeric index, exactly as Accounts' JSON contract expects it. */
+  authuser?: number;
+}
+
+export function parseSwitchRequest(raw: unknown): SwitchRequest {
+  const body = (raw ?? {}) as Record<string, unknown>;
+  const id = normalizeAuthUser(body.id) ?? undefined;
+  const rawAuthuser = normalizeAuthUser(body.authuser) ?? undefined;
+  // Accounts' JSON body takes an index, not the string form used in URLs.
+  const authuser = rawAuthuser && /^\d$/.test(rawAuthuser) ? Number(rawAuthuser) : undefined;
+  // `id` must be a slot letter; a numeric id would be a client bug we do not
+  // want to forward as a slot value.
+  if (body.id !== undefined && (!id || !/^[a-f]$/.test(id))) {
     throw new HttpError(400, 'bad_request', 'Unknown account.');
   }
-  return id;
+  if (!id && authuser === undefined) {
+    throw new HttpError(400, 'bad_request', 'Send { id } or { authuser }.');
+  }
+  return { ...(id ? { id } : {}), ...(authuser !== undefined ? { authuser } : {}) };
 }
 
-interface UpstreamBody {
-  activeId?: unknown;
-  accounts?: unknown;
+/** The browser origin (needed by Accounts' CSRF check) or our own mail URL. */
+function browserOrigin(request: Request, config: Config): string {
+  return request.headers.get('origin') || config.mailUrl;
 }
 
-/** Shape coming from Accounts inside the `accounts` array. */
-interface UpstreamAccount {
-  id?: unknown;
-  username?: unknown;
-  firstName?: unknown;
-  lastName?: unknown;
-  lastUsedAt?: unknown;
+interface UpstreamOptions {
+  method?: string;
+  body?: unknown;
+  selector?: string | null;
 }
 
 /**
- * One call to Accounts. Everything Mail cannot use is turned into either a 401
- * (only when Accounts really said "not signed in") or a 503. Never a 401 for a
- * broken handoff, because the browser redirects to Accounts on a 401.
+ * One call to Accounts. Every answer Mail cannot use becomes a 401 (only when
+ * Accounts really said "signed out") or a 503 — never a fake sign-out.
  */
 async function callAccounts(
   request: Request,
   config: Config,
   path: string,
-  init: { method?: string; body?: unknown } = {}
+  opts: UpstreamOptions = {}
 ): Promise<Response> {
   const cookie = request.headers.get('cookie');
   if (!cookie) {
-    // Bearer-only callers (native clients) have no browser cookie jar, so the
-    // account list is simply not available to them.
     throw new HttpError(503, ACCOUNTS_MISSING, 'The account switcher needs a browser session.');
   }
 
-  const headers: Record<string, string> = { cookie, accept: 'application/json' };
-  if (init.body !== undefined) headers['content-type'] = 'application/json';
+  const headers: Record<string, string> = {
+    cookie,
+    accept: 'application/json',
+    origin: browserOrigin(request, config),
+  };
+  if (opts.selector) headers['x-gothwad-authuser'] = opts.selector;
+  if (opts.body !== undefined) headers['content-type'] = 'application/json';
 
   let res: Response;
   try {
     res = await fetch(`${config.authHubUrl}${path}`, {
-      method: init.method || 'GET',
+      method: opts.method || 'GET',
       headers,
-      body: init.body === undefined ? undefined : JSON.stringify(init.body),
-      redirect: 'manual', // a redirect here means a routing problem, not a session
+      body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+      redirect: 'manual', // a redirect here is a routing problem, not a session
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
   } catch {
@@ -106,11 +112,16 @@ async function callAccounts(
     throw new HttpError(503, 'auth_unavailable', 'Accounts is not reachable right now.');
   }
 
-  // Accounts rotates session cookies on every authenticated call. Dropping
-  // them would sign the browser out of Accounts, so always pass them on.
+  // Rotated slot/refresh cookies must reach the browser, always.
   keepAccountsCookies(request, res);
 
   if (res.status === 401 || res.status === 403) {
+    // 403 upstream is its CSRF/origin check. Our own writes are checked before
+    // this call, so a 403 here means the deployment's origins disagree.
+    if (res.status === 403) {
+      console.warn('accounts_switch_failed code=bad_origin status=403');
+      throw new HttpError(403, 'bad_origin', 'Accounts rejected the request origin.');
+    }
     throw new HttpError(401, 'unauthenticated', 'Please sign in.', {
       signinUrl: `${config.authSigninUrl}/signin?choose=1`,
     });
@@ -124,117 +135,94 @@ async function callAccounts(
   return res;
 }
 
-/** Maps Accounts' list body to what the Mail UI needs, dropping anything odd. */
-function parseAccounts(body: UpstreamBody | null, config: Config): Omit<AccountsPayload, 'unread'> {
-  const rawList = Array.isArray(body?.accounts) ? (body!.accounts as UpstreamAccount[]) : [];
-  const activeId = typeof body?.activeId === 'string' && SLOT_RE.test(body.activeId) ? body.activeId : null;
+/** Builds the payload the UI needs: list from Accounts + counts from Mail. */
+async function payloadFor(
+  env: Env,
+  config: Config,
+  upstream: Response,
+  selector?: string | null
+): Promise<AccountsPayload> {
+  const body = (await upstream.json().catch(() => null)) as {
+    activeId?: unknown;
+    authuser?: unknown;
+    accounts?: unknown;
+  } | null;
 
-  const accounts: AccountSummary[] = [];
-  const seen = new Set<string>();
-  for (const raw of rawList) {
-    if (accounts.length >= MAX_ACCOUNTS) break;
-    const id = typeof raw?.id === 'string' && SLOT_RE.test(raw.id) ? raw.id : null;
-    const username = normalizeUsername(raw?.username);
-    // An entry Mail cannot fully trust is skipped: a bad row must never make
-    // the switcher show a mailbox that is not really signed in.
-    if (!id || !username || seen.has(id)) continue;
-    seen.add(id);
-    const name =
-      [raw.firstName, raw.lastName]
-        .map((part) => (typeof part === 'string' ? part.trim() : ''))
-        .filter(Boolean)
-        .join(' ') || null;
-    accounts.push({
-      id,
-      username,
-      name,
-      email: deriveEmail(username, config.appDomain),
-      lastUsedAt: typeof raw.lastUsedAt === 'string' ? raw.lastUsedAt : null,
-    });
+  const accounts = parseAccounts(body?.accounts, config, (n) => `${config.authSigninUrl}/u/${n}/me`);
+  const rawActive = typeof body?.activeId === 'string' ? body.activeId.toLowerCase() : null;
+  const activeId = rawActive && accounts.some((a) => a.id === rawActive) ? rawActive : accounts[0]?.id ?? null;
+  const upstreamIndex = typeof body?.authuser === 'number' ? body.authuser : 0;
+  const matched = accounts.findIndex((a) => a.id === activeId);
+  let authuser = matched >= 0 ? matched : Math.min(Math.max(upstreamIndex, 0), Math.max(accounts.length - 1, 0));
+  // This TAB's /u/<n>/ wins over the browser-wide active account: /u/1 must not
+  // render account 0 just because another tab made `a` active.
+  if (selector && /^\d$/.test(selector) && Number(selector) < accounts.length) {
+    authuser = Number(selector);
   }
+  const tabActiveId = accounts[authuser]?.id ?? activeId;
 
-  return { activeId: accounts.some((a) => a.id === activeId) ? activeId : accounts[0]?.id ?? null, accounts };
-}
-
-/**
- * Unread inbox counts for the accounts in the list.
- *
- * Only usernames that Accounts just confirmed are queried, so this can never be
- * used to read another mailbox's counts. One grouped query, not one per account.
- */
-async function unreadCounts(env: Env, usernames: string[]): Promise<Record<string, number>> {
-  if (usernames.length === 0) return {};
-  const unique = [...new Set(usernames)].slice(0, MAX_ACCOUNTS);
-  const placeholders = unique.map(() => '?').join(', ');
-  try {
-    const db = await Db.from(env);
-    const rows = await db.all<{ username: string; n: number }>(
-      `SELECT to_username AS username, COUNT(*) AS n
-         FROM mail_messages
-        WHERE folder = 'inbox' AND is_read = 0 AND to_username IN (${placeholders})
-        GROUP BY to_username`,
-      ...unique
-    );
-    // Start at 0 for every account so the client never has to guess; the
-    // grouped query only returns rows that actually have unread mail.
-    const out: Record<string, number> = {};
-    for (const username of unique) out[username] = 0;
-    for (const row of rows) out[row.username] = Number(row.n ?? 0);
-    return out;
-  } catch {
-    // A count is decoration. Never fail the switcher over it.
-    return {};
-  }
-}
-
-/** Full payload for the switcher: list from Accounts + counts from Mail. */
-async function payloadFor(env: Env, config: Config, upstream: Response): Promise<AccountsPayload> {
-  const body = (await upstream.json().catch(() => null)) as UpstreamBody | null;
-  const parsed = parseAccounts(body, config);
   const unread = await unreadCounts(
     env,
-    parsed.accounts.map((a) => a.username)
+    accounts.map((a) => a.username)
   );
-  return { ...parsed, unread };
+  return { activeId: tabActiveId, authuser, accounts, unread };
 }
 
 /** GET /api/mail/accounts */
-export async function listAccounts(env: Env, request: Request, config: Config): Promise<AccountsPayload> {
-  const res = await callAccounts(request, config, '/api/auth/accounts');
+export async function listAccounts(
+  env: Env,
+  request: Request,
+  config: Config,
+  selector: string | null
+): Promise<AccountsPayload> {
+  const res = await callAccounts(request, config, '/api/auth/accounts', { selector });
   if (res.status === 404) {
-    // Accounts has not shipped the multi-account API yet. Not an error: the UI
-    // hides the switcher and Mail behaves exactly as it did before.
-    return { activeId: null, accounts: [], unread: {}, unsupported: true };
+    // Accounts has not shipped the multi-account API: the UI hides the switcher
+    // and Mail behaves exactly as before. This keeps the deploy order free.
+    return { activeId: null, authuser: null, accounts: [], unread: {}, unsupported: true };
   }
   if (!res.ok) {
     console.warn(`accounts_switch_failed code=auth_unavailable status=${res.status}`);
     throw new HttpError(503, 'auth_unavailable', 'Accounts is not reachable right now.');
   }
-  return payloadFor(env, config, res);
+  return payloadFor(env, config, res, selector);
 }
 
-/** POST /api/mail/accounts/switch  { id } */
+/** POST /api/mail/accounts/switch  { id }  or  { authuser } */
 export async function switchAccount(
   env: Env,
   request: Request,
   config: Config,
-  rawId: unknown
+  body: unknown,
+  selector: string | null
 ): Promise<AccountsPayload> {
-  const id = parseSlotId(rawId);
-  const res = await callAccounts(request, config, '/api/auth/switch', { method: 'POST', body: { id } });
+  const target = parseSwitchRequest(body);
+  const upstream = await callAccounts(request, config, '/api/auth/switch', {
+    method: 'POST',
+    body: target,
+    selector,
+  });
 
-  if (res.status === 404) {
+  if (upstream.status === 404) {
     throw new HttpError(503, ACCOUNTS_MISSING, 'Switching accounts is not available yet.');
   }
-  // 409 from Accounts: this browser has no usable session for that slot any
-  // more. Pass it through so the UI can offer "sign in again" for that row.
-  if (res.status === 409) {
-    throw new HttpError(409, 'account_not_signed_in', 'That account is signed out. Sign in again.');
+  // 409: that slot's session is gone (or was revoked in another tab). Pass it
+  // through so the UI can offer "sign in again" for that one account.
+  if (upstream.status === 409) {
+    // Give the UI the exact re-auth link for that slot, so it can send the user
+    // straight to Accounts instead of guessing.
+    const index = typeof target.authuser === 'number' ? target.authuser : null;
+    throw new HttpError(
+      409,
+      'account_not_signed_in',
+      'That account is signed out. Sign in again.',
+      index === null ? {} : { authuser: index, reauthUrl: reauthUrl(config, index) }
+    );
   }
-  if (!res.ok) {
+  if (!upstream.ok) {
     throw new HttpError(503, 'auth_unavailable', 'Could not switch accounts right now.');
   }
-  return payloadFor(env, config, res);
+  return payloadFor(env, config, upstream);
 }
 
 /** POST /api/mail/accounts/signout  { id } */
@@ -242,40 +230,71 @@ export async function signOutAccount(
   env: Env,
   request: Request,
   config: Config,
-  rawId: unknown
-): Promise<AccountsPayload> {
-  const id = parseSlotId(rawId);
-  const res = await callAccounts(request, config, `/api/auth/accounts/${encodeURIComponent(id)}/signout`, {
+  body: unknown,
+  selector: string | null
+): Promise<AccountsPayload & { signedOutAll: boolean }> {
+  const { id } = parseSwitchRequest(body);
+  if (!id) throw new HttpError(400, 'bad_request', 'Send { id }.');
+
+  const upstream = await callAccounts(request, config, `/api/auth/accounts/${encodeURIComponent(id)}/signout`, {
     method: 'POST',
+    selector,
   });
 
-  if (res.status === 404) {
+  if (upstream.status === 404) {
     throw new HttpError(503, ACCOUNTS_MISSING, 'Account switching is not available yet.');
   }
-  if (!res.ok) {
+  if (!upstream.ok) {
     throw new HttpError(503, 'auth_unavailable', 'Could not sign that account out right now.');
   }
-  return payloadFor(env, config, res);
+
+  const bodyUpstream = (await upstream.json().catch(() => null)) as { signedOutAll?: unknown } | null;
+  const payload = await payloadFor(
+    env,
+    config,
+    new Response(JSON.stringify(bodyUpstream), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  );
+  return { ...payload, signedOutAll: payload.accounts.length === 0 || bodyUpstream?.signedOutAll === true };
 }
 
 /**
- * Where "Add another account" goes: the Accounts sign-in page in append mode.
- * Built from AUTH_SIGNIN_URL (the browser-facing host), never from the request,
- * so this cannot become an open redirect.
+ * Where "Add another account" goes: Accounts' sign-in page in append mode, with
+ * Google's parameters and a `next` back to the new slot's URL.
+ *
+ * Built from AUTH_SIGNIN_URL and MAIL_URL (config), never from the request, so
+ * it cannot become an open redirect.
  */
-export function addAccountUrl(config: Config, session: Session): string {
-  const next = `${config.mailUrl}/`;
-  const qs = new URLSearchParams({ choose: '1', add: '1', next });
-  // `username` lets Accounts prefill or at least say which account is adding
-  // another one; it is display-only there.
-  qs.set('from', session.username);
+export function addAccountUrl(config: Config, session: Session, nextIndex?: number): string {
+  const index =
+    typeof nextIndex === 'number' && nextIndex >= 0
+      ? nextIndex
+      : Math.min(session.accounts.length, 5);
+  const next = `${config.mailUrl}/u/${index}/`;
+  const qs = new URLSearchParams({ add: '1', login: '1', authuser: String(index), next });
   return `${config.authSigninUrl}/signin?${qs.toString()}`;
 }
 
 /** 302 to Accounts. A plain navigation, so no CORS and no fetch involved. */
-export function addAccountResponse(config: Config, session: Session): Response {
+export function addAccountResponse(config: Config, session: Session, nextIndex?: number): Response {
   return new Response(null, {
     status: 302,
-    headers: { location: addAccountUrl(config, session), 'cache-control': 'no-store' },
+    headers: { location: addAccountUrl(config, session, nextIndex), 'cache-control': 'no-store' },
   });
+}
+
+/**
+ * Re-auth link for a slot whose session is gone (409 during a switch):
+ * Accounts' sign-in with `login=1` and this slot's index.
+ */
+export function reauthUrl(config: Config, authuser: number, username?: string): string {
+  const qs = new URLSearchParams({
+    login: '1',
+    authuser: String(authuser),
+    next: `${config.mailUrl}/u/${authuser}/`,
+  });
+  if (username) qs.set('username', username);
+  return `${config.authSigninUrl}/signin?${qs.toString()}`;
 }

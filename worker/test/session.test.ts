@@ -197,8 +197,10 @@ test('accountUrl uses AUTH_SIGNIN_URL and /api/auth/me still uses AUTH_HUB_URL',
   );
   const res = await handleRequest(req('/api/session', { cookie: 'gothwad_at=good' }), custom);
   assert.equal(res.status, 200);
-  const body = (await res.json()) as { accountUrl: string };
-  assert.equal(body.accountUrl, 'https://accounts.test/me');
+  const body = (await res.json()) as { accountUrl: string; authuser: number };
+  // Google-style per-account profile page; index 0 because no accounts[] came back.
+  assert.equal(body.accountUrl, 'https://accounts.test/u/0/me');
+  assert.equal(body.authuser, 0);
   assert.equal(h.seen.find((s) => s.url.pathname === '/api/auth/me')?.url.origin, 'https://api.test');
   assert.equal(h.seen.some((s) => s.url.host === 'accounts.test'), false);
 });
@@ -228,7 +230,7 @@ test('session returns derived email and remaining sends counted from D1', async 
   assert.equal(body.user.email, 'alice@gothwadtech.com');
   assert.equal(body.user.name, 'Alice Sharma');
   assert.equal(body.limits.sendRemainingToday, 1, 'limit 2, one sent today');
-  assert.equal(body.accountUrl, 'https://accounts.test/me');
+  assert.equal(body.accountUrl, 'https://accounts.test/u/0/me');
 });
 
 test('rotated Accounts cookies are forwarded; other cookies are dropped', async () => {

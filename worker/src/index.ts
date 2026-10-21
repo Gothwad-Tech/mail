@@ -29,6 +29,8 @@ import { Db } from './db';
 import { corsHeaders, errorResponse, HttpError, json, assertSafeWrite, readJson } from './http';
 import * as mail from './mail';
 import { addAccountResponse, listAccounts, signOutAccount, switchAccount } from './accounts';
+import { authUserFromRequest } from './authuser';
+import { unreadCounts } from './accountList';
 import { handleInbound } from './inbound';
 import {
   enforceRetention,
@@ -80,11 +82,24 @@ async function handleSession(request: Request, env: Env, config: Config): Promis
     sendRemainingToday = null;
   }
 
+  // Single-call boot (Accounts v2.3): the same upstream /auth/me that resolved
+  // this session also returned the switcher list, so the app hydrates the user,
+  // the authuser index, the account list AND the unread badges in one round trip.
+  const unread = await unreadCounts(
+    env,
+    session.accounts.map((a) => a.username)
+  );
+
   return json({
     authenticated: true,
     user: { username: session.username, email: session.email, name: session.name },
-    // Browser-facing link, so it uses AUTH_SIGNIN_URL (see config.ts).
-    accountUrl: `${config.authSigninUrl}/me`,
+    // The account this TAB is showing (from /u/<n>/ or X-Gothwad-Authuser).
+    authuser: session.authuser,
+    activeId: session.activeId,
+    accounts: session.accounts,
+    unread,
+    // Browser-facing link for THIS account, so it uses AUTH_SIGNIN_URL.
+    accountUrl: session.accountUrl,
     limits: { dailySendLimit: config.dailySendLimit, sendRemainingToday },
   });
 }
@@ -277,25 +292,29 @@ async function route(request: Request, env: Env, config: Config): Promise<Respon
   // make is itself the authentication check, and mapping its answer here keeps
   // the "401 only means signed out" rule in one place.
   if (path === '/api/mail/accounts' && method === 'GET') {
-    return json(await listAccounts(env, request, config));
+    // The tab's selector is forwarded, so the list reflects this tab's slot.
+    return json(await listAccounts(env, request, config, authUserFromRequest(request)));
   }
 
   if (path === '/api/mail/accounts/switch' && method === 'POST') {
     assertSafeWrite(request, config);
-    const body = await readJson<{ id?: unknown }>(request);
-    return json(await switchAccount(env, request, config, body?.id));
+    const body = await readJson<Record<string, unknown>>(request);
+    return json(await switchAccount(env, request, config, body, authUserFromRequest(request)));
   }
 
   if (path === '/api/mail/accounts/signout' && method === 'POST') {
     assertSafeWrite(request, config);
-    const body = await readJson<{ id?: unknown }>(request);
-    return json(await signOutAccount(env, request, config, body?.id));
+    const body = await readJson<Record<string, unknown>>(request);
+    return json(await signOutAccount(env, request, config, body, authUserFromRequest(request)));
   }
 
   if (path === '/api/mail/accounts/add' && method === 'GET') {
-    // A navigation, so it needs the signed-in username to build the link.
+    // A navigation: the signed-in session builds the link, and `?authuser=` from
+    // the current tab decides which index the new account takes.
     const session = await requireSession(request, config);
-    return addAccountResponse(config, session);
+    const requested = authUserFromRequest(request);
+    const nextIndex = requested && /^\d$/.test(requested) ? Number(requested) + 1 : undefined;
+    return addAccountResponse(config, session, nextIndex);
   }
 
   const idMatch = path.match(/^\/api\/mail\/(messages|drafts)\/([^/]+)$/);

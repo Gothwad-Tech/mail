@@ -23,11 +23,14 @@ import { join, relative } from 'node:path';
 import process from 'node:process';
 
 const ROOT = new URL('..', import.meta.url).pathname;
-const SCAN = ['src', 'worker/src', 'worker/test', 'tests', 'tools'];
-const CODE = /\.(ts|tsx|mjs)$/;
+// Code AND docs are counted: a 900-line README is just as unreviewable as a
+// 900-line component. Generated/lock files are the only exemption.
+const SCAN = ['src', 'worker/src', 'worker/test', 'tests', 'tools', 'public', 'docs', 'sql'];
+const ROOT_FILES = ['AGENTS.md', 'PLAN.md', 'README.md', 'TASK.md', 'index.html', 'vite.config.ts'];
+const CODE = /\.(ts|tsx|mjs|js|css|html|sql|md)$/;
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'dev-dist', 'coverage', '.git']);
 const TARGET = 500;
-const MAX = 800;
+const MAX = 500; // hard limit: the owner's rule
 
 function walk(dir) {
   const out = [];
@@ -40,13 +43,22 @@ function walk(dir) {
   return out;
 }
 
-const files = SCAN.flatMap((dir) => {
-  try {
-    return walk(join(ROOT, dir));
-  } catch {
-    return []; // a folder that does not exist in this checkout
-  }
-});
+const files = [
+  ...SCAN.flatMap((dir) => {
+    try {
+      return walk(join(ROOT, dir));
+    } catch {
+      return []; // a folder that does not exist in this checkout
+    }
+  }),
+  ...ROOT_FILES.map((name) => join(ROOT, name)).filter((file) => {
+    try {
+      return statSync(file).isFile();
+    } catch {
+      return false;
+    }
+  }),
+];
 
 const rows = files
   .map((file) => {
@@ -58,8 +70,7 @@ const rows = files
 const over = rows.filter((r) => r.lines > MAX);
 const warn = rows.filter((r) => r.lines > TARGET && r.lines <= MAX);
 
-console.log(`file size check: ${rows.length} source files (target ${TARGET}, max ${MAX})`);
-for (const r of warn) console.warn(`  warn  ${String(r.lines).padStart(5)}  ${r.file}  — split it when you touch it`);
+console.log(`file size check: ${rows.length} files (hard max ${MAX} lines)`);
 for (const r of over) console.error(`  FAIL  ${String(r.lines).padStart(5)}  ${r.file}  — over the ${MAX}-line hard limit`);
 
 if (over.length > 0) {

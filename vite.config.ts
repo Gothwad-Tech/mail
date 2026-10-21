@@ -9,6 +9,9 @@ export default defineConfig(({mode}) => {
   // Vite only puts VITE_* values into import.meta.env for browser code, not into this config.
   const env = loadEnv(mode, process.cwd(), 'VITE_');
   return {
+    // Deep links like /u/1/#sent are the canonical app URL: the dev server must
+    // answer them with index.html, exactly like the Pages rewrite in public/_redirects.
+    appType: 'spa',
     plugins: [
       react(),
       tailwindcss(),
@@ -17,75 +20,16 @@ export default defineConfig(({mode}) => {
         includeAssets: [
           'favicon.ico',
           'apple-touch-icon.png',
-          'assets/favicon.ico',
-          'assets/apple-touch-icon.png',
-          'assets/icon-192.png',
-          'assets/icon-512.png',
-          'assets/icon-192-maskable.png',
-          'assets/icon-512-maskable.png',
+          'icon-192.png',
+          'icon-512.png',
+          'icon-192-maskable.png',
+          'icon-512-maskable.png',
         ],
-        manifest: {
-          id: '/',
-          name: 'Gothwad Mail',
-          short_name: 'GothwadMail',
-          description:
-            'Fast, modern desktop and mobile webmail for your Gothwad address, signed in with Gothwad Accounts.',
-          theme_color: '#0494f4',
-          background_color: '#ffffff',
-          display: 'standalone',
-          start_url: '/',
-          scope: '/',
-          icons: [
-            {
-              src: '/assets/icon-192.png',
-              sizes: '192x192',
-              type: 'image/png',
-              purpose: 'any',
-            },
-            {
-              src: '/assets/icon-512.png',
-              sizes: '512x512',
-              type: 'image/png',
-              purpose: 'any',
-            },
-            {
-              src: '/assets/icon-192-maskable.png',
-              sizes: '192x192',
-              type: 'image/png',
-              purpose: 'maskable',
-            },
-            {
-              src: '/assets/icon-512-maskable.png',
-              sizes: '512x512',
-              type: 'image/png',
-              purpose: 'maskable',
-            },
-            {
-              src: '/icon-192.png',
-              sizes: '192x192',
-              type: 'image/png',
-              purpose: 'any',
-            },
-            {
-              src: '/icon-512.png',
-              sizes: '512x512',
-              type: 'image/png',
-              purpose: 'any',
-            },
-            {
-              src: '/icon-192-maskable.png',
-              sizes: '192x192',
-              type: 'image/png',
-              purpose: 'maskable',
-            },
-            {
-              src: '/icon-512-maskable.png',
-              sizes: '512x512',
-              type: 'image/png',
-              purpose: 'maskable',
-            },
-          ],
-        },
+        // One manifest only: public/manifest.json. The plugin's own generator
+        // would emit a second, differently-iconed copy at /manifest.webmanifest
+        // while index.html links /manifest.json — two sources of truth for the
+        // same install prompt.
+        manifest: false,
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
           // The app shell works offline; /api/* always goes to the network,

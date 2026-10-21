@@ -69,12 +69,16 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
 11f. **The account list belongs to Accounts.** Mail only proxies it (`worker/src/accounts.ts`).
    Never store another account's credentials or session token in Mail. Unread counts may only be
    computed for usernames Accounts just returned.
+11e. **Every tab owns one account.** Canonical URL is `/u/<n>/[#folder]`; every request carries
+   `X-Gothwad-Authuser: <n>`, and the Worker passes it to Accounts as the tab selector. Never
+   read or write another tab's account, and never let an old account's row paint after a switch
+   (`MailProvider` is keyed by slot id).
 11d. **Keep the shell responsive.** Use `100dvh` + flex `min-h-0` (no magic pixel heights),
    keep tap targets >= 44px, and keep `SettingsModal`/`ComposeModal` lazy-loaded so the first
    paint stays small.
-12. **File size limit — a hard rule, not a preference.**
-    - Target: every `.ts` / `.tsx` / `.mjs` source file stays **at or below 500 lines**.
-    - Absolute maximum: **800 lines**. Nothing may exceed it.
+12. **File size limit — hard 500 lines, enforced.**
+    - Every `.ts` / `.tsx` / `.mjs` / `.js` / `.css` / `.html` / `.sql` / `.md` file stays
+      **at or below 500 lines**. There is no 800-line escape hatch any more.
     - If a file crosses 500, split it **in the same session** — never "later".
     - When you find an existing file over 500, split it as part of your change.
     - Splitting must be **behaviour-preserving**: same exported names, same logic, same
@@ -82,9 +86,11 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
       it in the same commit as the split.
     - Split by responsibility, not by line count: read path / write path / validation,
       or one hook per concern. A file with two unrelated exports is already a signal.
-    - Exempt: docs (`.md`), `package-lock.json`, CSS/JSON, and generated output.
-    - Enforced by `npm run check:sizes` (fails over 800, warns over 500). It runs first
-      inside `npm test`, so a regression cannot merge quietly.
+    - Exempt only: `package-lock.json`, JSON data, and generated output (`dist/`, `dev-dist/`).
+    - Enforced by `npm run check:sizes`, which **fails** over 500. It runs first inside
+      `npm test`, so a regression cannot merge quietly.
+    - Long session logs are archived, not deleted: `TASK.md` keeps recent sessions and points
+      at `docs/TASK_ARCHIVE.md`.
     - Current split for reference: `MailContext.tsx` (provider composition) +
       `mailContextTypes.ts`, `mailHelpers.ts`, `useMailbox.ts`, `useCompose.ts`,
       `useMailboxSettings.ts`, `useAccountsSwitcher.ts`; and `worker/src/mail.ts`
@@ -100,13 +106,15 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
 - Check the worker with `worker/tsconfig.json`. Do **not** run the root tsconfig over
   `worker/` (the DOM and workers libs clash). The root tsconfig excludes `worker/`.
 - Before you say something works, run the checks:
-  - `npm run check:sizes` (no source file over 800 lines; splits over 500)
+  - `npm run check:sizes` (no file over 500 lines)
   - `npm run lint` (root and worker typecheck)
   - `npm run build`
   - `npm run test:worker` (Worker tests on real SQLite, no network)
   - `npm run test:d1` (D1 adapter, gzip and retention tests on real SQLite)
   - `npm run test:auth` (sign-in return URL tests, no network)
   - `npm run test:config` (after touching `worker/wrangler.toml`; config guard)
+  - `npm run test:routing` (Gmail-style `/u/<n>/` URLs, no network)
+  - `npm run test:assets` (root-relative assets, one manifest, SW never caches `/api`)
   - `npm run test:ui` (jsdom smoke test; needs `npm run preview:api` or `npm run worker:dev`
     running. See `docs/SETUP.md`, "Local development")
 - `wrangler deploy --dry-run` should bundle cleanly before any deploy.

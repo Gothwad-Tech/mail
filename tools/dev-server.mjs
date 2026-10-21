@@ -46,40 +46,64 @@ const env = {
   MAX_INBOUND_BYTES: '10485760',
 };
 
-// Local only: a two-account Accounts stub, so the Google-style switcher is
-// testable without the real Accounts service. The active account is a cookie
-// (`gothwad_active`), exactly like the contract in docs/ACCOUNTS_AGENT_PROMPT.md,
-// so a switch survives a reload and the rest of the Worker code is untouched.
+// Local only: a two-account Accounts stub that mirrors the live v2.3 contract
+// (per-slot cookies, X-Gothwad-Authuser, single-call /auth/me with accounts).
+// The active account is still a cookie (`gothwad_active`), exactly like the real
+// service, so a switch survives a reload and the rest of the Worker code is
+// untouched.
 const LOCAL_ACCOUNTS = [
-  { id: 'a', username: 'alice', firstName: 'Alice', lastName: 'Sharma' },
-  { id: 'b', username: 'bob', firstName: 'Bob', lastName: 'Verma' },
+  { id: 'a', authuser: 0, username: 'alice', firstName: 'Alice', lastName: 'Sharma' },
+  { id: 'b', authuser: 1, username: 'bob', firstName: 'Bob', lastName: 'Verma' },
 ];
 
+/** Slots the local "browser" has signed out of (the stub keeps no real sessions). */
+const signedOutSlots = new Set();
+const liveAccounts = () => LOCAL_ACCOUNTS.filter((a) => !signedOutSlots.has(a.id));
+
 function activeSlot(cookie) {
-  const match = /gothwad_active=([a-z])/.exec(cookie || '');
+  const match = /gothwad_active=([a-f])/.exec(cookie || '');
   const id = match && match[1];
-  return LOCAL_ACCOUNTS.some((a) => a.id === id) ? id : 'a';
+  return liveAccounts().some((a) => a.id === id) ? id : liveAccounts()[0]?.id ?? 'a';
 }
 
-function accountsBody(activeId, slotIds) {
-  return {
-    activeId,
-    accounts: LOCAL_ACCOUNTS.filter((a) => slotIds.includes(a.id)).map((a) => ({
-      id: a.id,
-      username: a.username,
-      firstName: a.firstName,
-      lastName: a.lastName,
-      lastUsedAt: new Date().toISOString(),
-    })),
-  };
+/** The tab's selector wins over the browser-wide active cookie (multi-tab). */
+function selectedAccount(cookie, selector) {
+  const raw = (selector || '').trim().toLowerCase();
+  const live = liveAccounts();
+  if (raw) {
+    // Numeric selectors are positions in the CURRENT list, like the live
+    // service: after a sign out, index 0 is whoever is left.
+    if (/^\d+$/.test(raw)) return live[Number(raw)];
+    if (/^[a-f]$/.test(raw)) return live.find((a) => a.id === raw);
+    return live.find((a) => a.username === raw);
+  }
+  return live.find((a) => a.id === activeSlot(cookie));
 }
 
-function accountsResponse(activeId, slotIds = LOCAL_ACCOUNTS.map((a) => a.id)) {
-  const res = Response.json(accountsBody(activeId, slotIds));
-  res.headers.append(
-    'set-cookie',
-    `gothwad_active=${activeId}; Path=/; SameSite=Lax`
-  );
+function publicAccounts() {
+  // Number from the CURRENT list, exactly like the live service: after a sign
+  // out, the remaining account is re-slotted and its /u/<n>/ page follows.
+  return liveAccounts().map((a, index) => ({
+    id: a.id,
+    authuser: index,
+    username: a.username,
+    firstName: a.firstName,
+    lastName: a.lastName,
+    email: `${a.username}@${env.APP_DOMAIN}`,
+    avatarUrl: null,
+    accountUrl: `${env.AUTH_SIGNIN_URL}/u/${index}/me`,
+    lastUsedAt: new Date().toISOString(),
+  }));
+}
+
+function accountsResponse(account, extra = {}) {
+  const res = Response.json({
+    activeId: account.id,
+    authuser: account.authuser,
+    accounts: publicAccounts(),
+    ...extra,
+  });
+  res.headers.append('set-cookie', `gothwad_active=${account.id}; Path=/; SameSite=Lax`);
   return res;
 }
 
@@ -92,12 +116,19 @@ globalThis.fetch = async (input, init) => {
     return Response.json({ id: `local_${Date.now()}` }, { status: 200 });
   }
   if (url.startsWith(`${env.AUTH_HUB_URL}/api/auth/me`)) {
-    const cookie = new Headers(init?.headers).get('cookie') || '';
+    const headers = new Headers(init?.headers);
+    const cookie = headers.get('cookie') || '';
     if (cookie.includes('gothwad_at=good')) {
-      const slot = LOCAL_ACCOUNTS.find((a) => a.id === activeSlot(cookie)) || LOCAL_ACCOUNTS[0];
-      return Response.json({
+      const account = selectedAccount(cookie, headers.get('x-gothwad-authuser'));
+      if (!account) return Response.json({ authenticated: false }, { status: 401 });
+      return accountsResponse(account, {
         authenticated: true,
-        user: { username: slot.username, first_name: slot.firstName, last_name: slot.lastName },
+        user: {
+          username: account.username,
+          first_name: account.firstName,
+          last_name: account.lastName,
+          email: `${account.username}@${env.APP_DOMAIN}`,
+        },
       });
     }
     if (cookie.includes('gothwad_at=no_username')) {
@@ -106,28 +137,40 @@ globalThis.fetch = async (input, init) => {
     return Response.json({ authenticated: false }, { status: 401 });
   }
   if (url.startsWith(`${env.AUTH_HUB_URL}/api/auth/accounts/`)) {
-    // POST /api/auth/accounts/:id/signout — drop that slot from the list.
-    const cookie = new Headers(init?.headers).get('cookie') || '';
+    // POST /api/auth/accounts/:id/signout — drop that slot for this process,
+    // and promote the current account only if it was the one that left.
+    const headers = new Headers(init?.headers);
+    const cookie = headers.get('cookie') || '';
     const id = url.split('/api/auth/accounts/')[1].split('/')[0];
-    const remaining = LOCAL_ACCOUNTS.map((a) => a.id).filter((slot) => slot !== id);
-    const next = remaining.includes(activeSlot(cookie)) ? activeSlot(cookie) : remaining[0];
-    return accountsResponse(next || 'a', remaining);
+    signedOutSlots.add(id);
+    const live = liveAccounts();
+    if (live.length === 0) {
+      return Response.json({ ok: true, signedOutAll: true, activeId: null, authuser: 0, accounts: [] });
+    }
+    const next = live.some((a) => a.id === activeSlot(cookie)) ? activeSlot(cookie) : live[0].id;
+    return accountsResponse(
+      live.find((a) => a.id === next),
+      { ok: true, signedOutAll: false }
+    );
   }
   if (url.startsWith(`${env.AUTH_HUB_URL}/api/auth/accounts`)) {
     const cookie = new Headers(init?.headers).get('cookie') || '';
-    return accountsResponse(activeSlot(cookie));
+    return accountsResponse(liveAccounts().find((a) => a.id === activeSlot(cookie)));
   }
   if (url.startsWith(`${env.AUTH_HUB_URL}/api/auth/switch`)) {
-    let id = 'a';
+    let target = null;
     try {
-      id = JSON.parse(String(init?.body || '{}')).id || 'a';
+      const body = JSON.parse(String(init?.body || '{}'));
+      const live = liveAccounts();
+      target =
+        (body.id && live.find((a) => a.id === body.id)) ||
+        (body.authuser !== undefined && live.find((a) => a.authuser === Number(body.authuser))) ||
+        null;
     } catch {
-      id = 'a';
+      target = null;
     }
-    if (!LOCAL_ACCOUNTS.some((a) => a.id === id)) {
-      return Response.json({ error: 'account_not_signed_in' }, { status: 409 });
-    }
-    return accountsResponse(id);
+    if (!target) return Response.json({ error: 'account_not_signed_in' }, { status: 409 });
+    return accountsResponse(target, { ok: true });
   }
   if (url.startsWith(`${env.AUTH_HUB_URL}/api/oauth/userinfo`)) {
     return Response.json({ sub: '1', preferred_username: 'alice', name: 'Alice' });
@@ -144,6 +187,7 @@ async function seed() {
   // `pawan` = browser preview (dev bypass). `alice` = the user the UI smoke
   // test's local Accounts stub signs in as.
   for (const username of [USERNAME, 'alice', 'bob']) await seedMailbox(mailDb, username);
+  await seedAccountMarkers(mailDb);
 }
 
 async function seedMailbox(mailDb, username) {
@@ -226,6 +270,37 @@ async function seedMailbox(mailDb, username) {
   });
 }
 
+/**
+ * One message only THAT account's inbox holds. Two accounts have otherwise
+ * identical seeded mail (that is realistic), so this marker is what lets the
+ * isolation tests prove a switch never paints the previous account's rows.
+ */
+async function seedAccountMarkers(mailDb) {
+  for (const username of [USERNAME, 'alice', 'bob']) {
+    const subject = `Only ${username}'s account sees this`;
+    const existing = await mailDb.first(
+      'SELECT id FROM mail_messages WHERE to_username = ? AND subject = ?',
+      username,
+      subject
+    );
+    if (existing) continue;
+    await insertMessage(mailDb, {
+      username,
+      folder: 'inbox',
+      fromEmail: 'notes@gothwadtech.com',
+      fromName: 'Account Marker',
+      to: [`${username}@${env.APP_DOMAIN}`],
+      subject,
+      text: 'This row exists in exactly one mailbox.',
+      html: '<p>This row exists in exactly one mailbox.</p>',
+      isRead: false,
+      isStarred: false,
+      providerId: null,
+      receivedAt: new Date().toISOString(),
+    });
+  }
+}
+
 await seed();
 
 function readBody(req) {
@@ -258,6 +333,15 @@ const server = http.createServer(async (req, res) => {
     // still goes through the real cookie path the production browser uses.
     const worksWithCookies = Boolean(req.headers.cookie);
     if (!worksWithCookies) headers.set('cookie', 'gothwad_at=good');
+
+    // Local test hook: forget the simulated sign-outs so each UI test starts
+    // with alice and bob signed in. Never part of the Worker's API surface.
+    if (req.url === '/__local/reset-accounts' && req.method === 'POST') {
+      signedOutSlots.clear();
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
 
     const url = `http://localhost:${PORT}${req.url}`;
     const request = new Request(url, {
