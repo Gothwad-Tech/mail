@@ -3,11 +3,54 @@
 Updated every session. Newest first.
 
 
+## 2026-10-22 — The account menu becomes the shared Accounts widget (audited, not copied)
+
+**Owner request:** read `docs/MAIL_UNIVERSAL_ACCOUNT_MENU_PROMPT.md` from `GothwadTech/accounts`,
+**audit both live repos first instead of trusting the brief**, build what is genuinely best,
+keep every file at or below 500 lines, keep tests and the build green, and keep the docs honest.
+
+**Audit — what the brief asked for vs. what the live code allows**
+
+| Brief says | Live code | Decision |
+| --- | --- | --- |
+| Load `${accountsWebOrigin}/widget/account-menu.js`, call `window.GothwadAccountMenu.open(state, opts)` | Exists in `accounts@main`, exports exactly that (`open/update/close/isOpen`), served with `Access-Control-Allow-Origin: *` | Implemented as described |
+| Replace Mail's `AccountSheet.tsx` | Mail's sheet was 329 lines of duplicated Google UI | Replaced with a thin host; the rows now live in Accounts |
+| `accountHref`, `badges`, `theme`, `nextUrl`, `manageAccountHref`, `onSwitchAccount/SignOutAccount/SignOutAll` | All read by the live template | Passed, with Mail's own handlers doing the work |
+| "`onSignOutAll`" | Mail had no such route | Added `POST /api/mail/accounts/signout-all` → Accounts `/auth/signout` |
+| `user.avatarUrl` | Mail's session flattened the user to `{username,email,name}` | `/api/session` now returns `firstName`, `lastName`, `avatarUrl` (from Accounts' `presentUser`) |
+| `accountsWebOrigin` derived in the browser | Mail's config already knows `AUTH_SIGNIN_URL` | Worker sends it in `/api/session`, so no domain is hardcoded in the bundle |
+| "`Shift+A` and `↑/↓`/`Enter` inside the sheet" | The live widget only handles `Esc` | `Shift+A`/`Esc` work; arrow-key roving focus is requested from Accounts (documented gap, not faked in Mail) |
+| "100% pure English everywhere, enforced by a test" | Repo had Hinglish in `TASK.md`, `docs/*`, `tools/*` | Docs + comments rewritten to English, `tests/language.test.ts` added, `tools/` and test fixtures exempt (they hold non-Latin mail bodies on purpose) |
+
+**What was built**
+
+- `src/services/accountWidget.ts` — one cached dynamic import (CORS module load, 5 s timeout),
+  `requestIdleCallback` preload after session boot, and results instead of throws.
+- `src/services/accountMenu.ts` — pure `buildAccountMenu()` mapping Mail state → widget
+  `(state, opts)`: user with photo, accounts with real avatars, `activeId`, `authuser`, `theme`,
+  unread `badges`, `accountHref → /u/<n>/`, `nextUrl`, `manageAccountHref`, extras + handlers.
+- `src/components/AccountSheet.tsx` — the host: opens on the tapped avatar, pushes `update()`
+  while open, mirrors the widget's own close, and falls back to
+  `AccountSheetFallback.tsx` (compact in-app sheet, full keyboard support) if the script cannot
+  load. The avatar is therefore never dead.
+- `src/components/AccountAvatarButton.tsx` — one avatar button (photo or monogram, `+n` bubble)
+  used by both the mobile and the desktop header; the tapped element is the widget's anchor.
+- `tools/account-menu-widget.stub.js` — the dev server serves it at `/widget/account-menu.js`
+  with the real API, so `npm run dev` and the jsdom tests exercise the same path as production.
+- `docs/ACCOUNTS_AGENT_PROMPT.md` — addendum listing the exact contract Mail depends on plus the
+  two changes requested from Accounts (arrow-key model in the sheet, stable widget URL).
+
+**Tests:** 162 pass (`npm test`), including the new `tests/account-widget.test.ts` (mapping, URL
+building, loader single-import and failure paths), 11 rewritten UI tests that install the widget
+stand-in and drive the real callbacks, worker tests for `signout-all` and the new session identity
+fields, and `tests/language.test.ts`. `npm run lint`, `npm run build` (309 kB, 92.4 kB gzip) and
+`npx wrangler deploy --dry-run` are clean; every file is under 500 lines.
+
 ## 2026-10-21 — Gmail-level multi-account: `/u/<n>/` URLs, per-tab isolation, hard 500-line rule
 
-**Owner request:** switcher bilkul Google jaisa ho — har tab ka apna account, URL me account
-dikhe, aur ek account ki row doosre account ke frame me kabhi na aaye. Plus file-size rule ko
-sach me enforce karo.
+**Owner request:** make the switcher behave exactly like Google's — every tab its own account,
+the account visible in the URL, and never a row from one account inside another account's frame.
+Also make the file-size rule actually enforced.
 
 **What changed**
 
@@ -44,9 +87,9 @@ assets 7, plus the size gate. `npm run lint`, `npm run build` (308 kB / 91.7 kB 
 
 ## 2026-10-20 — File size rule (500 target / 800 max) + the splits it required
 
-**Owner request:** ek permanent rule docs me likho — koi bhi code file 500–800 lines ke andar
-rahe, try 500 tak; jo file pehle se badi hai use parts me todo **bina functionality/logic
-badle**. Sirf likhna nahi, abhi follow bhi karo.
+**Owner request:** write the rule down permanently — keep every code file within 500–800 lines,
+aiming for 500; split any file that is already bigger into parts **without changing behaviour or
+logic**. Do not just document it: follow it now.
 
 **Rule (AGENTS.md #12, now enforced, not a note):**
 
@@ -55,7 +98,7 @@ badle**. Sirf likhna nahi, abhi follow bhi karo.
   user-visible text, same tests)
 - docs/lock/CSS/JSON/generated output exempt
 - `npm run check:sizes` (`tools/check-file-sizes.mjs`) fails > 800, warns > 500, and runs as
-  the **first** step of `npm test` — so rule yaad rakhne par depend nahi karta
+  the **first** step of `npm test`, so it does not depend on anyone remembering the rule
 
 **Splits done in this session (all behaviour-preserving):**
 
@@ -81,8 +124,9 @@ not change. `useMail()` contract is untouched.
 
 ## 2026-10-20 — Account switcher built on the Mail side (Google flow), tested end to end
 
-**Owner request:** accounts agent ko prompt de diya; Mail side parallel me banao — Google jaisa
-flow: ek hi profile section, saare signed-in accounts, tap par ~1 second switch.
+**Owner request:** the prompt has been handed to the Accounts agent; build the Mail side in
+parallel with Google's flow: one profile section, every signed-in account, a ~1 second switch on
+tap.
 
 **Backend — `worker/src/accounts.ts` (new)**
 
@@ -130,14 +174,14 @@ flow: ek hi profile section, saare signed-in accounts, tap par ~1 second switch.
 
 ## 2026-10-20 — Multi-account switcher: plan + Accounts-side prompt (docs only, no code)
 
-**Owner request:** Google jaisa account section — ek hi jagah saare signed-in Gothwad accounts,
-avatar + unread, tap karke us mailbox par ~1 second me switch. Abhi sirf ek email dikhti hai
-jabki `accounts.gothwadtech.com` par 2 logins hain.
+**Owner request:** a Google-style account section — every signed-in Gothwad account in one
+place, avatar plus unread count, a tap switching to that mailbox in about a second. Today Mail
+shows a single address even though `accounts.gothwadtech.com` holds two sign-ins.
 
-**Finding:** ye Mail me akela fix nahi ho sakta. `worker/src/session.ts` har request par Accounts
-se **ek** identity leta hai, aur Accounts ek hi session per browser rakhta hai. Mail ko apni
-account list rakhne par majboor karna = doosre accounts ke credentials Mail me rakhna, jo
-allowed nahi. Data migration bhi nahi chahiye: har row pehle se `username` se scoped hai.
+**Finding:** this cannot be fixed inside Mail alone. `worker/src/session.ts` asks Accounts for
+**one** identity per request, and Accounts keeps a single session per browser. Forcing Mail to
+keep its own account list would mean storing other accounts' credentials in Mail, which is not
+allowed. No data migration is needed either: every row is already scoped by `username`.
 
 **Deliverables (docs only this session):**
 

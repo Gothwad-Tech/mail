@@ -40,6 +40,11 @@ export interface Session {
   username: string;
   email: string;
   name: string | null;
+  /** Parts of the name, so the account widget can render initials like Accounts. */
+  firstName: string;
+  lastName: string;
+  /** Accounts' profile photo URL (already resolved upstream), or null. */
+  avatarUrl: string | null;
   /** Google-style tab account index (0..5) this request belongs to. */
   authuser: number;
   /** Accounts' slot id for that index ("a".."f"), null for bearer/dev. */
@@ -101,6 +106,9 @@ export async function resolveSession(request: Request, config: Config): Promise<
       username,
       email: deriveEmail(username, config.appDomain),
       name: null,
+      firstName: '',
+      lastName: '',
+      avatarUrl: null,
       authuser: 0,
       activeId: null,
       accounts: [],
@@ -126,7 +134,14 @@ export async function resolveSession(request: Request, config: Config): Promise<
 // HTML, not with this.
 interface AccountsMeBody {
   authenticated?: boolean;
-  user?: { username?: unknown; first_name?: unknown; last_name?: unknown };
+  user?: {
+    username?: unknown;
+    first_name?: unknown;
+    last_name?: unknown;
+    // Accounts sends both spellings; the widget accepts either.
+    avatar_url?: unknown;
+    avatarUrl?: unknown;
+  };
   activeId?: unknown;
   authuser?: unknown;
   accounts?: unknown;
@@ -168,7 +183,10 @@ async function resolveCookie(request: Request, cookie: string, config: Config): 
     throw new HttpError(503, ACCOUNTS_USER_INVALID, ACCOUNTS_USER_INVALID_MESSAGE);
   }
 
-  const name = [body.user?.first_name, body.user?.last_name].filter(Boolean).join(' ').trim() || null;
+  const firstName = typeof body.user?.first_name === 'string' ? body.user.first_name.trim() : '';
+  const lastName = typeof body.user?.last_name === 'string' ? body.user.last_name.trim() : '';
+  const name = `${firstName} ${lastName}`.trim() || null;
+  const avatarUrl = textOrNull(body.user?.avatar_url) ?? textOrNull(body.user?.avatarUrl);
 
   // One upstream call now also returns the switcher list (Accounts v2.3), so
   // /api/session can boot the whole app without a second round trip.
@@ -184,6 +202,9 @@ async function resolveCookie(request: Request, cookie: string, config: Config): 
     username,
     email: deriveEmail(username, config.appDomain),
     name,
+    firstName,
+    lastName,
+    avatarUrl,
     authuser,
     activeId: account?.id ?? activeId,
     accounts,
@@ -205,6 +226,7 @@ async function resolveBearer(authHeader: string, config: Config): Promise<Sessio
   const body = (await res.json().catch(() => null)) as {
     preferred_username?: unknown;
     name?: string;
+    picture?: unknown;
   } | null;
   if (!body || typeof body !== 'object') {
     throw unexpectedResponseError(res);
@@ -214,16 +236,25 @@ async function resolveBearer(authHeader: string, config: Config): Promise<Sessio
     warnUpstreamFailure(ACCOUNTS_USER_INVALID, res);
     throw new HttpError(503, ACCOUNTS_USER_INVALID, ACCOUNTS_USER_INVALID_MESSAGE);
   }
+  const fullName = typeof body.name === 'string' ? body.name.trim() : '';
   return {
     username,
     email: deriveEmail(username, config.appDomain),
-    name: body.name ?? null,
+    name: fullName || null,
+    firstName: fullName.split(/\s+/)[0] ?? '',
+    lastName: fullName.split(/\s+/).slice(1).join(' '),
+    avatarUrl: textOrNull(body.picture),
     authuser: 0,
     activeId: null,
     accounts: [],
     accountUrl: `${config.authSigninUrl}/me`,
     source: 'bearer',
   };
+}
+
+/** A trimmed string, or null. Keeps a stray object out of the session payload. */
+function textOrNull(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
 /** 401/403 only: Accounts looked at the credentials and said "not signed in". */

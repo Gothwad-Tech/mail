@@ -28,6 +28,11 @@ export interface SessionUser {
   username: string;
   email: string;
   name: string | null;
+  /** Name parts, so the account widget can draw Accounts-style initials. */
+  firstName?: string;
+  lastName?: string;
+  /** Accounts profile photo (already resolved upstream), or null. */
+  avatarUrl?: string | null;
 }
 
 export interface SessionInfo {
@@ -42,6 +47,12 @@ export interface SessionInfo {
   unread: Record<string, number>;
   /** Accounts' profile page for the current account. */
   accountUrl: string;
+  /**
+   * Origin of the Accounts web app (from the Worker's config). The shared
+   * account widget is loaded from `${accountsWebOrigin}/widget/account-menu.js`,
+   * so no domain is ever hardcoded in the browser bundle.
+   */
+  accountsWebOrigin?: string;
   limits: { dailySendLimit: number; sendRemainingToday: number | null };
 }
 
@@ -194,6 +205,10 @@ export const mailApi = {
 
   signOutAccount: (id: string) =>
     request<AccountsInfo & { signedOutAll: boolean }>('/mail/accounts/signout', { method: 'POST', body: { id } }),
+
+  /** Signs every account out of this browser (Accounts' `/auth/signout`). */
+  signOutAll: () =>
+    request<{ ok: true; signedOutAll: true }>('/mail/accounts/signout-all', { method: 'POST', body: {} }),
 
   /** Accounts' re-auth link for one slot (used when a switch returns 409). */
   reauthUrl: (authuser: number, username?: string) => {

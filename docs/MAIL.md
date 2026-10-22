@@ -196,7 +196,7 @@ All JSON. Everything except `/api/health` needs a signed-in session.
 | Method | Path | What it does |
 | --- | --- | --- |
 | GET | `/api/health` | Liveness, no auth. Reports `engine: "cloudflare-d1-native"`, `database: { bound, ready, tables }` (live query on `sqlite_master`) and `configured` booleans (`d1Binding`, `accountsInternalToken`, `resendApiKey`). Never prints a key or a URL. |
-| GET | `/api/session` | Who am I, my address, `accountUrl`, `sendRemainingToday`. |
+| GET | `/api/session` | Single-call boot: `{ user { username, email, name, firstName, lastName, avatarUrl }, authuser, activeId, accounts[], unread{}, accountUrl, accountsWebOrigin, limits }`. |
 | GET | `/api/mail/settings` | `{ retentionLimit, storageUsedBytes, storageQuotaBytes, totalMessages, starredMessages }`. |
 | PATCH | `/api/mail/settings` | Body: `{ retentionLimit: 500 \| 1500 \| 0 }`. Saves, runs retention immediately, returns the updated stats plus `cleanup: { trashPurged, trimmed }`. |
 | GET | `/api/mail/messages?folder=inbox\|starred\|sent\|drafts\|trash&limit=&before=` | One page, newest first (max 100). Returns `nextBefore` for "Load more". |
@@ -208,6 +208,7 @@ All JSON. Everything except `/api/health` needs a signed-in session.
 | GET | `/api/mail/accounts` | Signed-in accounts for the switcher: `{ activeId, accounts[], unread{} }`. Empty + `unsupported: true` when Accounts has no multi-account API yet. |
 | POST | `/api/mail/accounts/switch` | `{ id }` → makes that account the active one. 409 `account_not_signed_in` if Accounts no longer has a session for it. |
 | POST | `/api/mail/accounts/signout` | `{ id }` → signs one account out; the active account moves to the next one, or the browser is signed out. |
+| POST | `/api/mail/accounts/signout-all` | Signs every slot out (`Accounts /auth/signout`). The next `/api/session` answers 401, which is the one place that decides where the browser goes. |
 | GET | `/api/mail/accounts/add` | 302 to Accounts' sign-in in append mode (`?choose=1&add=1`). |
 | POST | `/api/mail/send` | Send: `{ to, cc?, bcc?, subject, body, draftId? }`. Returns 201 with `id`, `saved`, `remainingToday`. |
 
@@ -243,7 +244,7 @@ the "401 means signed out" rule stays in one place (`worker/src/accounts.ts`).
   another mailbox.
 * **Emails are derived** (`username@APP_DOMAIN`), never taken from the upstream body.
 * **Switching clears every cache** before the next paint, and `App.tsx` keys `MailProvider` by
-  username, so a remount is guaranteed. Showing one account's inbox to another would be a
+  slot id, so a remount is guaranteed. Showing one account's inbox to another would be a
   privacy leak, not just stale data.
 * **No reload**: switch → `/api/session` re-read → the provider remounts and the new inbox loads
   (skeletons, then rows).
@@ -252,8 +253,37 @@ the "401 means signed out" rule stays in one place (`worker/src/accounts.ts`).
 * **Add another account** is a normal navigation to
   `{AUTH_SIGNIN_URL}/signin?choose=1&add=1&next=…`; the URL is built from config, never from the
   request, so it cannot become an open redirect.
-* Keyboard: `Shift+A` opens the switcher; the avatar shows a `+n` bubble when more accounts are
-  signed in.
+* Keyboard: `Shift+A` opens the menu from anywhere; the avatar shows a `+n` bubble when more
+  accounts are signed in.
+
+### The menu itself is Accounts' widget, not Mail's UI
+
+Every Gothwad app must show the *same* sheet, the way Gmail, Keep and Play show Google's
+OneGoogle bar. Accounts hosts it once at
+`${accountsWebOrigin}/widget/account-menu.js` (`window.GothwadAccountMenu`), and Mail consumes it:
+
+* `src/services/accountWidget.ts` — the loader. It imports the module once (dynamic
+  `import(/* @vite-ignore */ url)`, which is CORS-fetched; Accounts serves `/widget/*` with
+  `Access-Control-Allow-Origin: *`), caches it, and **preloads it during idle time right after the
+  session boots**, so the first avatar tap opens the sheet with no network wait. Failures resolve
+  to a result object instead of throwing.
+* `src/services/accountMenu.ts` — a pure mapping from Mail's state to the widget's
+  `open(state, opts)`: user, accounts (with real `avatarUrl`), `activeId`, `authuser`, `theme`,
+  unread `badges`, `accountHref(acct) → /u/<n>/` (so Ctrl/Cmd/middle-click opens that mailbox in
+  a new tab), `nextUrl`, `manageAccountHref`, and the handlers.
+* `src/components/AccountSheet.tsx` — the host. It opens the widget on the anchor element that
+  was tapped, pushes `update()` while the sheet is open (new mail → new pills, theme toggle → new
+  palette), and keeps React state in sync when the widget closes itself.
+* Switching, sign-out, draft flushing and cache purging stay in **Mail's** handlers. The widget
+  never talks to Mail's API; it calls the callbacks it was given.
+* `accountsWebOrigin` comes from `/api/session`, so no domain is hardcoded in the browser bundle.
+  In production it is the Worker's configured `AUTH_SIGNIN_URL`; in development it is the host the
+  browser actually used, and the client then loads the plain path `/widget/account-menu.js`, which
+  the Vite dev server proxies to the local stand-in. Same code path, no if-branches in the UI.
+* If the script cannot load (offline, blocked host, Accounts redeploying), the avatar is **not**
+  dead: `src/components/AccountSheetFallback.tsx` renders a compact in-app sheet with the same
+  rows. It exists only for that case and is covered by tests, but it must never become the
+  default.
 
 The full contract for the Accounts side lives in [`ACCOUNTS_AGENT_PROMPT.md`](./ACCOUNTS_AGENT_PROMPT.md);
 the plan and acceptance tests are in [`MULTI_ACCOUNT_PLAN.md`](./MULTI_ACCOUNT_PLAN.md).
@@ -294,8 +324,11 @@ mail/u/1/  →   /u/1/           (alias, rewritten on boot)
 ### Local testing of the switcher
 
 `tools/dev-server.mjs` runs a two-account Accounts stub (alice + bob) where the active slot is
-the `gothwad_active` cookie. So `npm run preview:api` + `npm run dev` shows the real switcher, and
-`npm run test:ui` switches accounts end to end in jsdom.
+the `gothwad_active` cookie, and serves `tools/account-menu-widget.stub.js` at
+`/widget/account-menu.js` with the same `open/update/close/isOpen` API as the real widget. So
+`npm run preview:api` + `npm run dev` shows the widget path end to end, and `npm run test:ui`
+drives the same widget inside jsdom (the test installs the stand-in as
+`window.GothwadAccountMenu`, which is what the loader checks first).
 
 ## Frontend
 

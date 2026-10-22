@@ -17,7 +17,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ApiError, mailApi, type AccountSummary, type AccountsInfo } from '../services/mailApi';
 import { errorText } from './mailHelpers';
 import { navigateToAccount } from '../services/authuser';
-import { dropAccountMailboxCache } from '../services/mailboxCache';
+import { clearAllMailboxCaches, dropAccountMailboxCache } from '../services/mailboxCache';
 import type { EmailFolder } from '../types/email';
 
 interface UseAccountsSwitcherOptions {
@@ -168,6 +168,21 @@ export function useAccountsSwitcher({
     ]
   );
 
+  /**
+   * Sign out of every account in this browser. Accounts revokes all slot
+   * cookies; the session re-check then answers 401 and the app leaves for
+   * sign-in, exactly like a first visit. No account data is kept in memory.
+   */
+  const signOutAll = useCallback(async () => {
+    try {
+      await mailApi.signOutAll();
+      clearAllMailboxCaches();
+      await onSessionChanged();
+    } catch (err) {
+      showToast(errorText(err));
+    }
+  }, [onSessionChanged, showToast]);
+
   /** Accounts' "add another account" link, carrying this tab's index. */
   const addAccountUrl = `/api/mail/accounts/add?authuser=${accounts.length > 0 ? Math.min(accounts.length, 5) : 0}`;
 
@@ -181,6 +196,7 @@ export function useAccountsSwitcher({
     refreshAccounts,
     switchAccount,
     signOutAccount,
+    signOutAll,
     addAccountUrl,
   };
 }

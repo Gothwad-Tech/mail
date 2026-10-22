@@ -32,6 +32,8 @@ export const MailProvider: React.FC<{
   sendRemainingToday: number | null;
   dailySendLimit: number | null;
   accountUrl: string;
+  /** Accounts web origin, so the client can load its shared account widget. */
+  accountsWebOrigin?: string;
   /** This tab's account index from /u/<n>/ (0..5). */
   authuser: number;
   /** Accounts slot id for that index. */
@@ -49,6 +51,7 @@ export const MailProvider: React.FC<{
   sendRemainingToday: initialRemaining,
   dailySendLimit,
   accountUrl,
+  accountsWebOrigin = '',
   authuser,
   activeId,
   accounts: initialAccounts,
@@ -189,6 +192,9 @@ export const MailProvider: React.FC<{
       name: user.name,
       email: user.email,
       avatarText: initials(user.name, user.username),
+      firstName: user.firstName ?? '',
+      lastName: user.lastName ?? '',
+      avatarUrl: user.avatarUrl ?? null,
     }),
     [user]
   );
@@ -250,6 +256,8 @@ export const MailProvider: React.FC<{
     sendRemainingToday,
     dailySendLimit,
     accountUrl,
+    authuser,
+    accountsWebOrigin,
     accounts: accounts.accounts,
     activeAccountId: accounts.activeAccountId,
     accountUnread: accounts.accountUnread,
@@ -259,6 +267,7 @@ export const MailProvider: React.FC<{
     refreshAccounts: accounts.refreshAccounts,
     switchAccount: accounts.switchAccount,
     signOutAccount: accounts.signOutAccount,
+    signOutAllAccounts: accounts.signOutAll,
     addAccountUrl: accounts.addAccountUrl,
     toast,
     dismissToast,

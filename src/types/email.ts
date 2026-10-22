@@ -44,5 +44,9 @@ export interface UserProfile {
   username: string;
   name: string | null;
   email: string;
+  /** Monogram shown when Accounts has no photo. */
   avatarText: string;
+  firstName?: string;
+  lastName?: string;
+  avatarUrl?: string | null;
 }

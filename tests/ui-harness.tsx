@@ -153,6 +153,92 @@ export function accountTrigger(): HTMLButtonElement | undefined {
   );
 }
 
+/** The in-app fallback sheet (the shared widget renders in a shadow root). */
 export function accountDialog(): HTMLElement | null {
-  return document.querySelector('[role="dialog"][aria-label="Gothwad Accounts"]');
+  return document.querySelector('[role="dialog"][aria-modal="true"]');
+}
+
+// ---------------------------------------------------------------------------
+// The shared account widget
+//
+// In a browser, Mail dynamically imports `${accountsWebOrigin}/widget/account-menu.js`.
+// jsdom cannot import an http URL, so the tests load Mail's local stand-in
+// (tools/account-menu-widget.stub.js, served by the dev server at exactly that
+// path) and install it as `window.GothwadAccountMenu` — which is what the loader
+// checks first. Mail's own code path (loader -> open(state, opts) -> callbacks)
+// is therefore exercised for real, not mocked.
+// ---------------------------------------------------------------------------
+
+export interface WidgetCall {
+  state: Record<string, unknown> & { accounts?: Array<{ id: string; authuser: number; email: string }> };
+  opts: Record<string, unknown> & { anchorEl?: HTMLElement | null; badges?: Record<string, number> };
+}
+
+export interface WidgetRig {
+  calls: WidgetCall[];
+  close: () => void;
+  isOpen: () => boolean;
+}
+
+/** Installs the widget stand-in and records every open()/update() call. */
+export async function installAccountWidget(): Promise<WidgetRig> {
+  const { resetAccountWidgetForTests } = await import('../src/services/accountWidget.ts');
+  // The stand-in is plain JS; the widget contract is what matters here.
+  const stub = (await import('../tools/account-menu-widget.stub.js')).GothwadAccountMenu as {
+    open: (state?: Record<string, unknown>, opts?: Record<string, unknown>) => void;
+    update: (state?: Record<string, unknown>, opts?: Record<string, unknown>) => void;
+    close: () => void;
+    isOpen: () => boolean;
+  };
+  resetAccountWidgetForTests();
+  stub.close();
+
+  const calls: WidgetCall[] = [];
+  const api = {
+    open: (state: Record<string, unknown> = {}, opts: Record<string, unknown> = {}) => {
+      calls.push({ state, opts });
+      stub.open(state, opts);
+    },
+    update: (state: Record<string, unknown> = {}, opts: Record<string, unknown> = {}) => {
+      stub.update(state, opts);
+    },
+    close: () => stub.close(),
+    isOpen: () => stub.isOpen(),
+  };
+  (window as unknown as { GothwadAccountMenu?: unknown }).GothwadAccountMenu = api;
+  return { calls, close: () => stub.close(), isOpen: () => stub.isOpen() };
+}
+
+/** Removes the widget, so Mail falls back to its own built-in sheet. */
+export async function removeAccountWidget(): Promise<void> {
+  const { resetAccountWidgetForTests } = await import('../src/services/accountWidget.ts');
+  resetAccountWidgetForTests();
+}
+
+/** The widget's shadow root (it renders inside one), or null when closed. */
+export function sheetShadow(): ShadowRoot | null {
+  const host = document.querySelector('[data-gothwad-account-menu-stub]');
+  return (host?.shadowRoot as ShadowRoot | null) ?? null;
+}
+
+/** True when the shared widget is the thing on screen. */
+export const isWidgetSheetOpen = (): boolean => Boolean(sheetShadow());
+
+/** Text of the open sheet, whichever implementation rendered it. */
+export function sheetText(): string {
+  const shadow = sheetShadow();
+  return shadow ? shadow.textContent || '' : '';
+}
+
+/** Click the first element inside the sheet (widget or fallback) matching a text. */
+export async function clickInSheet(match: (text: string, el: HTMLElement) => boolean): Promise<boolean> {
+  const root: ParentNode = sheetShadow() ?? document.body;
+  const candidates = [...root.querySelectorAll<HTMLElement>('button, a, [role="button"]')];
+  // textContent keeps the template's indentation; compare trimmed text.
+  const target = candidates.find((el) => match((el.textContent || '').trim(), el));
+  if (!target) return false;
+  await act(async () => {
+    target.click();
+  });
+  return true;
 }

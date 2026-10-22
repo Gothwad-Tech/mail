@@ -74,8 +74,17 @@ export const MobileDrawer: React.FC = () => {
 
         {/* User Card (from the Accounts session) */}
         <div className="px-4 py-3 bg-neutral-50 dark:bg-[#262626] border-b border-neutral-200 dark:border-[#333333] flex items-center gap-3">
-          <div className="w-9 h-9 rounded-full bg-[#0494f4] text-white flex items-center justify-center font-bold text-xs shadow-xs">
-            {currentUser.avatarText}
+          <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-full bg-[#0494f4] text-xs font-bold text-white shadow-xs">
+            {currentUser.avatarUrl ? (
+              <img
+                src={currentUser.avatarUrl}
+                alt=""
+                className="h-full w-full object-cover"
+                referrerPolicy="no-referrer"
+              />
+            ) : (
+              currentUser.avatarText
+            )}
           </div>
           <div className="min-w-0">
             <p className="text-xs font-bold text-neutral-900 dark:text-white truncate">
