@@ -135,15 +135,15 @@ stayed hidden. Local Wrangler commands read `name` from the file, so they hit a 
 
 **Human steps still needed (owner)**
 1. `npm run worker:secrets:list` — after this fix it targets `mail`. It must list
-   `ACCOUNTS_INTERNAL_TOKEN`, `SUPABASE_SERVICE_ROLE_KEY`, `RESEND_API_KEY`. Jo missing ho to
-   Workers & Pages → `mail` → Settings → Variables and Secrets → **Production** → type
-   **Secret** se add karo. Values chat me ya file me kabhi nahi.
-2. Redeploy (`npm run worker:deploy`), then
-   `curl -s https://mail.gothwadtech.com/api/health` — `configured` me chaaron `true` hone
-   chahiye.
-3. Dashboard me check karo ki koi leftover unused Worker `gothwad-mail-api` hai kya (purane
-   deploy se). Agar hai to owner khud review karke delete kare — code se Cloudflare me kuch
-   delete nahi karna.
+   `ACCOUNTS_INTERNAL_TOKEN`, `SUPABASE_SERVICE_ROLE_KEY` and `RESEND_API_KEY`. For any that
+   are missing, open Workers & Pages → `mail` → Settings → Variables and Secrets → **Production**
+   and add it as a **Secret**. Never put values in chat or in a file.
+2. Redeploy (`npm run worker:deploy`), then run
+   `curl -s https://mail.gothwadtech.com/api/health` — all four `configured` flags must be
+   `true`.
+3. Check the dashboard for a leftover unused Worker `gothwad-mail-api` from an older deploy. If
+   one exists, the owner reviews and deletes it by hand: nothing is ever deleted in Cloudflare
+   from code.
 
 ---
 

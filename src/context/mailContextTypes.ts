@@ -116,6 +116,10 @@ export interface MailContextType {
   sendRemainingToday: number | null;
   dailySendLimit: number | null;
   accountUrl: string;
+  /** This tab's account index (/u/<n>/). */
+  authuser: number;
+  /** Accounts web origin from the session; '' if the Worker did not send one. */
+  accountsWebOrigin: string;
 
   // Account switcher (multiple signed-in Gothwad accounts)
   accounts: AccountSummary[];
@@ -129,6 +133,8 @@ export interface MailContextType {
   refreshAccounts: () => void;
   switchAccount: (id: string) => Promise<boolean>;
   signOutAccount: (id: string) => Promise<void>;
+  /** Signs every account out; the session check then sends the browser away. */
+  signOutAllAccounts: () => Promise<void>;
   /** Link to Accounts' sign-in page in "add another account" mode. */
   addAccountUrl: string;
 

@@ -10,6 +10,7 @@ import { Toast } from './components/Toast';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { useSession } from './hooks/useSession';
 import { folderFromHash, hashForFolder } from './services/authuser';
+import { preloadAccountWidget } from './services/accountWidget';
 
 // Compose and Settings are only needed after a tap. Loading them on demand keeps
 // the first paint (inbox) small.
@@ -214,6 +215,14 @@ export default function App() {
   // Auth gate: nothing private renders until the Worker confirms the Accounts session.
   const { state, retry, refresh, applyAccount } = useSession();
 
+  // Warm the shared account widget while the inbox paints, so the first avatar
+  // tap opens the sheet with no network wait. Quietly ignored if it fails: the
+  // sheet falls back to the in-app menu.
+  const accountsWebOrigin = state.status === 'ready' ? state.info.accountsWebOrigin ?? '' : '';
+  useEffect(() => {
+    if (accountsWebOrigin) preloadAccountWidget(accountsWebOrigin);
+  }, [accountsWebOrigin]);
+
   if (state.status === 'loading') return <Screen title="Checking your Gothwad account…" />;
   if (state.status === 'redirecting') return <Screen title="Redirecting you to sign in…" />;
   if (state.status === 'error') {
@@ -232,6 +241,7 @@ export default function App() {
       sendRemainingToday={info.limits.sendRemainingToday}
       dailySendLimit={info.limits.dailySendLimit}
       accountUrl={info.accountUrl}
+      accountsWebOrigin={info.accountsWebOrigin ?? ''}
       authuser={info.authuser}
       activeId={info.activeId}
       accounts={info.accounts}

@@ -12,6 +12,12 @@ your address comes from your username.
 
 Folders: **Inbox, Starred, Sent, Drafts, Trash**.
 
+**Several accounts, one browser.** Up to six Gothwad accounts can stay signed in, exactly like
+Gmail: every tab owns one account (`/u/0/`, `/u/1/`, …), and the profile avatar opens the
+*shared* Gothwad account menu hosted by Accounts
+(`${accountsWebOrigin}/widget/account-menu.js`) — the same sheet Accounts, Store and Console
+show. Mail supplies the data and the handlers; it does not draw a second menu.
+
 **Smart retention** (per user, in Settings): latest **500** (default), latest **1,500**, or
 **Store All** up to a 50 MB fair-use quota. Starred emails and drafts are never auto-deleted;
 Trash empties after 30 days.
@@ -48,6 +54,10 @@ Without a signed-in Accounts session the app sends you to Accounts. For local wo
 | `npm run test:worker` | Worker tests on real SQLite (no network) |
 | `npm run test:d1` | D1 adapter, gzip and retention tests on real SQLite |
 | `npm run test:auth` | Sign-in redirect/return URL tests (no network) |
+| `npm run test:routing` | `/u/<n>/` URL routing, aliases and hash folders |
+| `npm run test:assets` | Root-relative assets, one web manifest, service worker never caches `/api` |
+| `npm run test:widget` | Account-widget contract: the `open(state, opts)` mapping and the loader |
+| `npm run test:language` | Repository language hygiene (English only, no Hinglish in code or docs) |
 | `npm run test:config` | Checks `worker/wrangler.toml` is complete, D1-bound and secret-free |
 | `npm run test:ui` | jsdom smoke test of the real app (needs `preview:api` or `worker:dev`) |
 | `npm run worker:dev` | Worker locally (`wrangler dev`, automatic local D1) |

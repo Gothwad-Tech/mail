@@ -20,6 +20,7 @@
 
 import http from 'node:http';
 import process from 'node:process';
+import { readFileSync } from 'node:fs';
 import { createLocalD1 } from './local-d1.mjs';
 import worker from '../worker/src/index.ts';
 import { Db } from '../worker/src/db.ts';
@@ -35,7 +36,10 @@ const env = {
   DB: db,
   APP_DOMAIN: process.env.APP_DOMAIN || 'gothwadtech.com',
   AUTH_HUB_URL: process.env.AUTH_HUB_URL || 'https://api.gothwadtech.com',
-  AUTH_SIGNIN_URL: process.env.AUTH_SIGNIN_URL || 'https://accounts.gothwadtech.com',
+  // Browser-facing Accounts host. Locally that is this server: it serves the
+  // widget stub at /widget/account-menu.js and the sign-in stub pages, so the
+  // dev preview follows exactly the same code path as production.
+  AUTH_SIGNIN_URL: process.env.AUTH_SIGNIN_URL || `http://localhost:${PORT}`,
   MAIL_URL: process.env.MAIL_URL || 'http://localhost:3000',
   ENVIRONMENT: 'development',
   DEV_AUTH_USERNAME: USERNAME,
@@ -312,8 +316,26 @@ function readBody(req) {
   });
 }
 
+// The shared account widget lives in the Accounts repo in production. Locally we
+// serve the same API from tools/account-menu-widget.stub.js, so the dev preview
+// and the jsdom tests exercise the real `${accountsWebOrigin}/widget/...` path.
+const WIDGET_STUB = readFileSync(new URL('./account-menu-widget.stub.js', import.meta.url), 'utf8');
+
 const server = http.createServer(async (req, res) => {
   try {
+    if (req.url === '/widget/account-menu.js') {
+      // Same headers the real Accounts host sends for /widget/*: cross-origin
+      // module loads are CORS requests, so without this the import fails.
+      res.writeHead(200, {
+        'content-type': 'text/javascript; charset=utf-8',
+        'access-control-allow-origin': '*',
+        'cross-origin-resource-policy': 'cross-origin',
+        'cache-control': 'no-store',
+      });
+      res.end(WIDGET_STUB);
+      return;
+    }
+
     const body = ['GET', 'HEAD'].includes(req.method) ? undefined : await readBody(req);
     const headers = new Headers();
     for (const [key, value] of Object.entries(req.headers)) {

@@ -21,6 +21,7 @@
 //   GET    /api/mail/accounts              signed-in accounts + per-account unread
 //   POST   /api/mail/accounts/switch        { id } -> switch the active account
 //   POST   /api/mail/accounts/signout       { id } -> sign one account out
+//   POST   /api/mail/accounts/signout-all          -> sign every account out
 //   GET    /api/mail/accounts/add          302 to Accounts sign-in in append mode
 // =============================================================================
 
@@ -28,7 +29,7 @@ import { readConfig, configStatus, type Config, type Env } from './config';
 import { Db } from './db';
 import { corsHeaders, errorResponse, HttpError, json, assertSafeWrite, readJson } from './http';
 import * as mail from './mail';
-import { addAccountResponse, listAccounts, signOutAccount, switchAccount } from './accounts';
+import { addAccountResponse, listAccounts, signOutAccount, signOutAllAccounts, switchAccount } from './accounts';
 import { authUserFromRequest } from './authuser';
 import { unreadCounts } from './accountList';
 import { handleInbound } from './inbound';
@@ -69,6 +70,23 @@ async function settingsPayload(env: Env, username: string) {
   };
 }
 
+/**
+ * Origin the browser should load the shared account widget from.
+ *
+ * Production: the configured Accounts web host (AUTH_SIGNIN_URL). Development:
+ * the host the browser actually used, because the local dev server serves the
+ * widget stand-in at `/widget/account-menu.js` and Vite proxies that path. Using
+ * the request host here is safe because it is only a browser-side hint, it is
+ * never used for a redirect, and it only happens when ENVIRONMENT=development.
+ */
+function accountsWebOriginFor(request: Request, config: Config): string {
+  if (config.isProduction) return config.authSigninUrl;
+  const host = request.headers.get('host');
+  if (!host || !/^[a-z0-9.-]+(:\d+)?$/i.test(host)) return config.authSigninUrl;
+  const proto = request.headers.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
+  return `${proto}://${host}`;
+}
+
 async function handleSession(request: Request, env: Env, config: Config): Promise<Response> {
   const session = await requireSession(request, config);
 
@@ -92,7 +110,15 @@ async function handleSession(request: Request, env: Env, config: Config): Promis
 
   return json({
     authenticated: true,
-    user: { username: session.username, email: session.email, name: session.name },
+    user: {
+      username: session.username,
+      email: session.email,
+      name: session.name,
+      firstName: session.firstName,
+      lastName: session.lastName,
+      // The account widget shows the real photo when Accounts has one.
+      avatarUrl: session.avatarUrl,
+    },
     // The account this TAB is showing (from /u/<n>/ or X-Gothwad-Authuser).
     authuser: session.authuser,
     activeId: session.activeId,
@@ -100,6 +126,10 @@ async function handleSession(request: Request, env: Env, config: Config): Promis
     unread,
     // Browser-facing link for THIS account, so it uses AUTH_SIGNIN_URL.
     accountUrl: session.accountUrl,
+    // Origin of the Accounts web app. The browser loads the shared account
+    // widget from `${accountsWebOrigin}/widget/account-menu.js`; deriving it
+    // here keeps the domain out of the client bundle.
+    accountsWebOrigin: accountsWebOriginFor(request, config),
     limits: { dailySendLimit: config.dailySendLimit, sendRemainingToday },
   });
 }
@@ -306,6 +336,11 @@ async function route(request: Request, env: Env, config: Config): Promise<Respon
     assertSafeWrite(request, config);
     const body = await readJson<Record<string, unknown>>(request);
     return json(await signOutAccount(env, request, config, body, authUserFromRequest(request)));
+  }
+
+  if (path === '/api/mail/accounts/signout-all' && method === 'POST') {
+    assertSafeWrite(request, config);
+    return json(await signOutAllAccounts(request, config, authUserFromRequest(request)));
   }
 
   if (path === '/api/mail/accounts/add' && method === 'GET') {

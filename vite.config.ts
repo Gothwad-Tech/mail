@@ -85,6 +85,13 @@ export default defineConfig(({mode}) => {
           target: env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:8787',
           changeOrigin: false,
         },
+        // The shared account widget is served by Accounts in production. Locally
+        // the dev server stands in for it on the same path, so the browser loads
+        // it from this origin and the loader's same-origin rule applies.
+        '/widget': {
+          target: env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:8787',
+          changeOrigin: false,
+        },
       },
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.

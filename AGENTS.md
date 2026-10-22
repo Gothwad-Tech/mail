@@ -69,6 +69,12 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
 11f. **The account list belongs to Accounts.** Mail only proxies it (`worker/src/accounts.ts`).
    Never store another account's credentials or session token in Mail. Unread counts may only be
    computed for usernames Accounts just returned.
+11g. **One account menu in the whole ecosystem.** Mail never draws its own switcher. It loads
+   Accounts' shared widget from `${accountsWebOrigin}/widget/account-menu.js` (origin comes from
+   the session, never a hardcoded domain), preloads it on boot, and hands it Mail's data plus
+   Mail's handlers (`open(state, opts)`). Switching, drafts, caches and sign-out stay in Mail's
+   own code. `src/components/AccountSheetFallback.tsx` exists only for the case where that
+   script cannot load; it must never become the default.
 11e. **Every tab owns one account.** Canonical URL is `/u/<n>/[#folder]`; every request carries
    `X-Gothwad-Authuser: <n>`, and the Worker passes it to Accounts as the tab selector. Never
    read or write another tab's account, and never let an old account's row paint after a switch
@@ -96,7 +102,13 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
       `useMailboxSettings.ts`, `useAccountsSwitcher.ts`; and `worker/src/mail.ts`
       (barrel) + `mail-types.ts` / `mail-read.ts` / `mail-write.ts`; Worker tests are one
       file per area over `worker/test/helpers.ts`.
-13. **Talk to the user in simple English or Hinglish.**
+13. **English in the repository, simple English or Hinglish in chat.**
+    - Every UI string, code comment, test name, commit message and document in this repository is
+      written in English. Enforced by `npm run test:language` (scans `src/`, `worker/src/`,
+      `docs/` and the root Markdown files).
+    - Chat with the owner can be simple English or Hinglish; that is a conversation, not a file.
+    - Test fixtures may contain non-Latin text on purpose: they prove mail bodies survive
+      encoding, and `tests/` + `tools/` are excluded from the scan.
 14. **Update `TASK.md` every session.**
 15. **Never delete `AGENTS.md` once created.**
 
@@ -113,6 +125,8 @@ Read `docs/MAIL.md` for how it works and `docs/SETUP.md` for the human setup ste
   - `npm run test:d1` (D1 adapter, gzip and retention tests on real SQLite)
   - `npm run test:auth` (sign-in return URL tests, no network)
   - `npm run test:config` (after touching `worker/wrangler.toml`; config guard)
+  - `npm run test:language` (English-only repository, no Hinglish in code or docs)
+  - `npm run test:widget` (`buildAccountMenu` mapping + widget loader contract)
   - `npm run test:routing` (Gmail-style `/u/<n>/` URLs, no network)
   - `npm run test:assets` (root-relative assets, one manifest, SW never caches `/api`)
   - `npm run test:ui` (jsdom smoke test; needs `npm run preview:api` or `npm run worker:dev`

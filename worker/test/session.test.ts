@@ -263,3 +263,70 @@ test('dev bypass works only with ENVIRONMENT=development', async () => {
   const prod = await worker.fetch(req('/api/session'), makeEnv({ DEV_AUTH_USERNAME: 'pawan' }));
   assert.equal(prod.status, 401, 'the bypass is ignored in production');
 });
+
+test('the session carries the identity the account widget draws', async () => {
+  h.stub = (s) =>
+    s.url.host === 'accounts.test'
+      ? Response.json({
+          authenticated: true,
+          user: {
+            username: 'alice',
+            first_name: 'Alice',
+            last_name: 'Sharma',
+            avatar_url: 'https://cdn.test/alice.png',
+          },
+        })
+      : new Response('x', { status: 599 });
+
+  const res = await worker.fetch(authed('/api/session'), h.env);
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as {
+    user: { name: string; firstName: string; lastName: string; avatarUrl: string | null };
+    accountsWebOrigin: string;
+  };
+  assert.equal(body.user.name, 'Alice Sharma');
+  assert.equal(body.user.firstName, 'Alice', 'initials come from the name parts');
+  assert.equal(body.user.lastName, 'Sharma');
+  assert.equal(body.user.avatarUrl, 'https://cdn.test/alice.png');
+  // The browser loads `${accountsWebOrigin}/widget/account-menu.js`, so the
+  // origin must come from config, not from a hardcoded domain in the bundle.
+  assert.equal(body.accountsWebOrigin, 'https://accounts.test');
+});
+
+test('a user without a photo or name parts still produces a usable session', async () => {
+  h.stub = (s) =>
+    s.url.host === 'accounts.test'
+      ? Response.json({ authenticated: true, user: { username: 'alice' } })
+      : new Response('x', { status: 599 });
+
+  const res = await worker.fetch(authed('/api/session'), h.env);
+  const body = (await res.json()) as {
+    user: { name: string | null; firstName: string; lastName: string; avatarUrl: unknown };
+  };
+  assert.equal(body.user.name, null);
+  assert.equal(body.user.firstName, '');
+  assert.equal(body.user.lastName, '');
+  assert.equal(body.user.avatarUrl, null, 'never undefined: the widget checks for null');
+});
+
+test('development points the widget at the host the browser used; production uses config', async () => {
+  h.stub = (s) =>
+    s.url.host === 'accounts.test'
+      ? Response.json({ authenticated: true, user: { username: 'alice' } })
+      : new Response('x', { status: 599 });
+
+  // Development: the local dev server serves the widget stand-in itself, so the
+  // browser must be told the origin it is actually on.
+  const dev = await worker.fetch(
+    req('/api/session', { cookie: 'gothwad_at=good', headers: { host: '3000-preview.test' } }),
+    makeEnv({ ENVIRONMENT: 'development' })
+  );
+  assert.equal(((await dev.json()) as { accountsWebOrigin: string }).accountsWebOrigin, 'http://3000-preview.test');
+
+  // Production: always the configured Accounts web host, whatever Host says.
+  const prod = await worker.fetch(
+    req('/api/session', { cookie: 'gothwad_at=good', headers: { host: 'evil.test' } }),
+    h.env
+  );
+  assert.equal(((await prod.json()) as { accountsWebOrigin: string }).accountsWebOrigin, 'https://accounts.test');
+});

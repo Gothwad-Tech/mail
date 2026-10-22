@@ -124,7 +124,14 @@ export function useSession() {
         status: 'ready',
         info: {
           ...prev.info,
-          user: { username: account.username, email: account.email, name: account.name },
+          user: {
+            username: account.username,
+            email: account.email,
+            name: account.name,
+            firstName: account.firstName,
+            lastName: account.lastName,
+            avatarUrl: account.avatarUrl,
+          },
           authuser: account.authuser,
           activeId: account.id,
           accounts: all,

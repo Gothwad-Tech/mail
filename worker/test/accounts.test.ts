@@ -391,3 +391,43 @@ test('accounts keep Accounts\' own numbering, even when the array is shuffled', 
   assert.equal(body.activeId, 'b', 'this tab is /u/1/, which is bob');
   assert.equal(body.authuser, 1);
 });
+
+test('POST /api/mail/accounts/signout-all revokes every slot', async () => {
+  const seen: string[] = [];
+  h.stub = (s) => {
+    if (s.url.pathname === '/api/auth/signout') {
+      seen.push(String(s.headers.get('x-gothwad-authuser')));
+      return Response.json({ ok: true });
+    }
+    return new Response('x', { status: 599 });
+  };
+
+  const res = await worker.fetch(
+    req('/api/mail/accounts/signout-all', {
+      method: 'POST',
+      cookie: 'gothwad_at=good',
+      origin: MAIL_ORIGIN,
+      headers: { 'X-Gothwad-Authuser': '1', 'content-type': 'application/json' },
+      body: '{}',
+    }),
+    h.env
+  );
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { ok: true, signedOutAll: true });
+  assert.deepEqual(seen, ['1'], 'the tab selector is forwarded like every other call');
+});
+
+test('signout-all needs a same-origin write, like the other account routes', async () => {
+  h.stub = () => Response.json({ ok: true });
+  const res = await worker.fetch(
+    req('/api/mail/accounts/signout-all', {
+      method: 'POST',
+      cookie: 'gothwad_at=good',
+      origin: 'https://evil.test',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    }),
+    h.env
+  );
+  assert.equal(res.status, 403);
+});

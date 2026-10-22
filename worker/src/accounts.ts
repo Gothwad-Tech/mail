@@ -225,6 +225,28 @@ export async function switchAccount(
   return payloadFor(env, config, upstream);
 }
 
+/**
+ * POST /api/mail/accounts/signout-all
+ *
+ * Accounts' `/auth/signout` revokes every slot cookie this browser holds. Mail
+ * only forwards it: after this the next `/api/session` is a 401, which is the
+ * single place that decides where the browser goes.
+ */
+export async function signOutAllAccounts(
+  request: Request,
+  config: Config,
+  selector: string | null
+): Promise<{ ok: true; signedOutAll: true }> {
+  const upstream = await callAccounts(request, config, '/api/auth/signout', { method: 'POST', selector });
+  if (upstream.status === 404) {
+    throw new HttpError(503, ACCOUNTS_MISSING, 'Account switching is not available yet.');
+  }
+  if (!upstream.ok) {
+    throw new HttpError(503, 'auth_unavailable', 'Could not sign out right now.');
+  }
+  return { ok: true, signedOutAll: true };
+}
+
 /** POST /api/mail/accounts/signout  { id } */
 export async function signOutAccount(
   env: Env,

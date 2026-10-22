@@ -158,3 +158,40 @@ Ship one PR in the Accounts repo that answers, in its description:
 
 When that PR is merged and deployed, Mail's switcher UI can go live immediately — the Mail
 side is already specified in `MULTI_ACCOUNT_PLAN.md`.
+
+---
+
+## Addendum — Mail now consumes `web/widget/account-menu.js`
+
+Mail removed its own account sheet and opens the shared widget instead. The integration was
+written against the live file in `GothwadTech/accounts@main`, not against a mock, so these are the
+points Accounts has to keep stable:
+
+**Contract Mail relies on (do not rename without telling Mail):**
+
+| Piece | Used as |
+| --- | --- |
+| `window.GothwadAccountMenu.open(state, opts)` | opens the sheet |
+| `.update(state, opts)` | live refresh while open (unread pills, theme, account list) |
+| `.close()`, `.isOpen()` | host state sync |
+| `opts.anchorEl` | the avatar element that was tapped (desktop card placement) |
+| `opts.theme` | `'light' \| 'dark'`, mirrors the host app |
+| `opts.badges` | `{ [username]: unreadCount }` |
+| `opts.accountHref(account)` | Mail returns `/u/<n>/` so Ctrl/Cmd/middle-click opens that mailbox |
+| `opts.nextUrl`, `opts.manageAccountHref`, `opts.ecosystemName` | links and the sheet title |
+| `opts.onSwitchAccount`, `onSignOutAccount`, `onSignOutAll`, `onError`, `onClose` | Mail's handlers |
+| `opts.extraActions[{ label, onClick }]` | Mail's own rows (Mail settings, theme toggle) |
+
+`manageAccountHref` is passed with **no** `onManageAccount`, on purpose: that keeps the widget's
+own link behaviour (a real navigation, middle-click friendly).
+
+**Two requests for the Accounts side:**
+
+1. **Keyboard model inside the sheet.** Mail's fallback sheet supports `↑/↓` + `Enter`; the shared
+   widget only handles `Esc`. Add roving focus over `[data-gw-switch]` rows (plus `Home/End`), and
+   Mail gets Google's full keyboard behaviour everywhere for free.
+2. **Serve `/widget/account-menu.js` with a stable, short cache.** It is currently
+   `max-age=0, must-revalidate` with `Access-Control-Allow-Origin: *`, which is correct for module
+   loads. Please keep the CORS header (module scripts are always CORS-fetched) and keep the file
+   name stable, since every app's import points at it. If the module ever needs a breaking change,
+   publish it at a new path and leave the old one in place for one release.

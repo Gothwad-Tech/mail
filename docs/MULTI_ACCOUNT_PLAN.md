@@ -5,10 +5,11 @@
 tapping one switches the whole app to that mailbox **in about a second** — no password, no
 sign-out, no full page reload wherever we can avoid it.
 
-**Owner summary (Hinglish):** Accounts app me 2 login already hain, lekin unhme se sirf ek hi
-mailbox dikhta hai kyunki Accounts abhi ek hi session rakhta hai. Isliye kaam do hisson me hai —
-pehle Accounts multi-session de (prompt ready hai), phir Mail uske upar switcher UI banaye. Mail
-ka D1 data pehle se per-user hai, to Mail me sirf session + UI badalna hai, data migrate nahi karna.
+**Owner summary:** the Accounts app already holds two sign-ins, but only one mailbox is
+visible because Accounts keeps a single session. The work therefore has two halves: first
+Accounts provides multi-session (its prompt is ready), then Mail builds the switcher UI on top.
+Mail's D1 data is already per user, so only the session handling and the UI change — no data
+migration.
 
 ---
 
@@ -154,8 +155,14 @@ Rules for B1:
 ## 6. Acceptance tests (must all pass before "done")
 
 **Status: green.** Each item below names the automated test that now holds it. Local run:
-`npm test` → 141 tests (13 of them end-to-end UI), plus `npm run lint`, `npm run build` and
+`npm test` → 162 tests (16 of them end-to-end UI), plus `npm run lint`, `npm run build` and
 `npx wrangler deploy --dry-run --config worker/wrangler.toml`.
+
+**Update — the sheet is now Accounts' shared widget.** Mail no longer draws its own switcher; it
+opens `window.GothwadAccountMenu` (see `docs/MAIL.md`, "The menu itself is Accounts' widget").
+Rows, focus handling and the close animation therefore live in the Accounts repository. The tests
+below drive Mail's integration against a stand-in that implements the same
+`open/update/close/isOpen` contract (`tools/account-menu-widget.stub.js`).
 
 | # | Test |
 |---|------|
@@ -168,13 +175,23 @@ Rules for B1:
 | 7 | `tests/ui-switcher.test.tsx` — signing out the inactive account |
 | 8 | `tests/ui-switcher.test.tsx` — signing out the shown account hops to the promoted one |
 | 9 | `worker/test/accounts.test.ts` — signout of the last slot reports `signedOutAll` |
-| 10 | `tests/ui-switcher.test.tsx` — `Shift+A`, `↑/↓`, `Enter`, `Esc` |
-| 11 | `tests/ui-switcher.test.tsx` — 390×844 and 1440×900 class contract |
+| 10 | `tests/ui-switcher.test.tsx` — `Shift+A` opens (under the avatar), `Esc` closes; the fallback sheet is fully keyboard reachable |
+| 11 | `tests/ui-switcher.test.tsx` — anchor hand-off (mobile vs desktop avatar, keyboard) and the fallback's 390×844 / 1440×900 layout contract |
 | 12 | `tests/ui-switcher.test.tsx` (web storage) + `tests/assets.test.ts` (SW never caches `/api`) |
 
-Extra coverage added with the URL work: `tests/routing.test.ts` (`/u/n/`, aliases, hash folders,
-one-shot params, Back/Forward), `tests/assets.test.ts` (root-relative assets, single manifest,
-Pages rewrites), `worker/test/multitab.test.ts` (two tabs reading and sending concurrently).
+Extra coverage: `tests/routing.test.ts` (`/u/n/`, aliases, hash folders, one-shot params,
+Back/Forward), `tests/assets.test.ts` (root-relative assets, single manifest, Pages rewrites),
+`worker/test/multitab.test.ts` (two tabs reading and sending concurrently),
+`tests/account-widget.test.ts` (the widget state/opts mapping, URL building, the loader's
+single-import and error paths), `tests/language.test.ts` (English-only repository).
+
+### Known gap, deliberately left open
+
+Google's account sheet supports `↑/↓` + `Enter` inside the list. That keyboard model belongs to
+the sheet, which now lives in `GothwadTech/accounts/web/widget/account-menu.js`; Mail cannot add it
+without patching another repository's DOM. Mail's own fallback sheet is fully keyboard reachable,
+and the extension point is written down in `docs/ACCOUNTS_AGENT_PROMPT.md` (pending Accounts
+change) rather than hacked into Mail.
 
 Original list, kept for reference:
 

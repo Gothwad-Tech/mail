@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { useMail } from '../context/MailContext';
 import { AccountSheet } from './AccountSheet';
+import { AccountAvatarButton } from './AccountAvatarButton';
 import { PWAInstallButton } from './PWAInstallButton';
 
 interface HeaderProps {
@@ -29,12 +30,11 @@ export const Header: React.FC<HeaderProps> = ({ onToggleSidebar }) => {
     toggleTheme,
     setIsSettingsModalOpen,
     setIsMobileNavOpen,
-    currentUser,
-    accounts,
-    activeAccountId,
   } = useMail();
 
   const [isAccountSheetOpen, setIsAccountSheetOpen] = useState(false);
+  // The widget positions its card under the avatar that was actually tapped.
+  const [accountAnchor, setAccountAnchor] = useState<HTMLElement | null>(null);
 
   // Shift+A opens the account switcher, like the other single-key shortcuts.
   useEffect(() => {
@@ -45,6 +45,13 @@ export const Header: React.FC<HeaderProps> = ({ onToggleSidebar }) => {
       }
       if (e.shiftKey && (e.key === 'A' || e.key === 'a')) {
         e.preventDefault();
+        // Keyboard users have no pointer anchor: fall back to the desktop avatar
+        // so the card still opens under the profile button.
+        const anchor =
+          (document.querySelector('button[aria-label^="Accounts ("]') as HTMLElement | null) ??
+          (document.querySelector('button[aria-label="User profile"]') as HTMLElement | null) ??
+          (document.querySelector('button[aria-label="Account details"]') as HTMLElement | null);
+        setAccountAnchor(anchor);
         setIsAccountSheetOpen(true);
       }
     };
@@ -52,10 +59,12 @@ export const Header: React.FC<HeaderProps> = ({ onToggleSidebar }) => {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  // A second signed-in account is worth showing: overlapping circles on the
-  // avatar button are the same hint Gmail gives before you open the list.
-  const otherAccounts = accounts.filter((a) => a.id !== activeAccountId).slice(0, 2);
   const searchFilterRef = useRef<HTMLDivElement>(null);
+
+  const openAccountSheet = (anchor: HTMLElement) => {
+    setAccountAnchor(anchor);
+    setIsAccountSheetOpen(true);
+  };
 
   // Close filter popover on click outside
   useEffect(() => {
@@ -126,22 +135,8 @@ export const Header: React.FC<HeaderProps> = ({ onToggleSidebar }) => {
             <SlidersHorizontal className="w-4 h-4" />
           </button>
 
-          {/* User Profile Avatar (Opens Account Sheet on Mobile) */}
-          <button
-            type="button"
-            onClick={() => setIsAccountSheetOpen(true)}
-            className="relative ml-1 flex h-8 shrink-0 items-center rounded-full shadow-sm"
-            aria-label={accounts.length > 1 ? `Accounts (${accounts.length})` : 'Account details'}
-          >
-            {otherAccounts.length > 0 && (
-              <span className="mr-[-10px] flex h-8 w-8 items-center justify-center rounded-full border-2 border-white bg-neutral-400 text-[10px] font-bold text-white dark:border-[#212121] dark:bg-neutral-600">
-                +{accounts.length - 1}
-              </span>
-            )}
-            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#0494f4] text-xs font-bold tracking-tight text-white">
-              {currentUser.avatarText}
-            </span>
-          </button>
+          {/* Profile avatar: opens the shared account sheet on mobile */}
+          <AccountAvatarButton variant="mobile" onOpen={openAccountSheet} />
 
           {/* Mobile Search Filter Dropdown */}
           {isSearchFilterOpen && (
@@ -401,27 +396,14 @@ export const Header: React.FC<HeaderProps> = ({ onToggleSidebar }) => {
             <Settings className="w-5 h-5" />
           </button>
 
-          <button
-            onClick={() => setIsAccountSheetOpen(true)}
-            className="flex h-10 items-center rounded-full shadow-sm transition-opacity hover:opacity-90"
-            aria-label={accounts.length > 1 ? `Accounts (${accounts.length})` : 'User profile'}
-            title={accounts.length > 1 ? 'Switch account (Shift+A)' : 'Account'}
-          >
-            {otherAccounts.length > 0 && (
-              <span className="mr-[-12px] flex h-10 w-10 items-center justify-center rounded-full border-2 border-white bg-neutral-400 text-[11px] font-bold text-white dark:border-[#212121] dark:bg-neutral-600">
-                +{accounts.length - 1}
-              </span>
-            )}
-            <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[#0494f4] text-sm font-bold tracking-tight text-white">
-              {currentUser.avatarText}
-            </span>
-          </button>
+          <AccountAvatarButton variant="desktop" onOpen={openAccountSheet} />
         </div>
       </header>
 
-      {/* Account & Workspace Dialog Sheet */}
+      {/* The shared Accounts sheet (or Mail's fallback when it cannot load) */}
       <AccountSheet
         isOpen={isAccountSheetOpen}
+        anchorEl={accountAnchor}
         onClose={() => setIsAccountSheetOpen(false)}
       />
     </>
