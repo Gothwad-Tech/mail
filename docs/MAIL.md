@@ -43,8 +43,10 @@ public config (`wrangler.toml` `[vars]`), not secrets.
 
 ## Identity and the email address
 
-1. The browser calls `GET /api/session`. The Worker forwards the browser's cookies to
-   Accounts: `GET {AUTH_HUB_URL}/api/auth/me`.
+1. The browser calls `GET /api/session?meta=0` (identity). The Worker forwards the browser's
+   cookies to Accounts: `GET {AUTH_HUB_URL}/api/auth/me`. That call is the ONLY thing the app
+   waits for: no database work, no optional fields. Unread badges and the send quota come from
+   a second, non-blocking request (`GET /api/session/meta`) — see `docs/STARTUP.md`.
 2. If Accounts says `authenticated: true`, the Worker takes `user.username`. The address is
    **derived**: `username@APP_DOMAIN`. Accounts does not store the email.
 3. If the user is not signed in, the Worker returns **401** with
@@ -66,7 +68,7 @@ public config (`wrangler.toml` `[vars]`), not secrets.
 
 #### `/api/session` status table
 
-| What Accounts `GET /api/auth/me` answered | Mail `GET /api/session` |
+| What Accounts `GET /api/auth/me` answered | Mail `GET /api/session` (and `?meta=0`) |
 | --- | --- |
 | 401 / 403 (real signed-out) | 401 with `signinUrl` (unchanged) |
 | 200, `authenticated: false` | 401 with `signinUrl` (unchanged) |
@@ -196,7 +198,9 @@ All JSON. Everything except `/api/health` needs a signed-in session.
 | Method | Path | What it does |
 | --- | --- | --- |
 | GET | `/api/health` | Liveness, no auth. Reports `engine: "cloudflare-d1-native"`, `database: { bound, ready, tables }` (live query on `sqlite_master`) and `configured` booleans (`d1Binding`, `accountsInternalToken`, `resendApiKey`). Never prints a key or a URL. |
-| GET | `/api/session` | Single-call boot: `{ user { username, email, name, firstName, lastName, avatarUrl }, authuser, activeId, accounts[], unread{}, accountUrl, accountsWebOrigin, limits }`. |
+| GET | `/api/session?meta=0` | **Identity only** (what the app boots with): `{ authenticated, user { username, email, name, firstName, lastName, avatarUrl }, authuser, activeId, accounts[], accountUrl, accountsWebOrigin, meta: false, unread: null, limits: null }`. No D1 access at all. |
+| GET | `/api/session/meta` | **Deferred metadata**: `{ authenticated, meta: true, authuser, unread: { username: count } \| null, limits { dailySendLimit, sendRemainingToday: number \| null } }`. `null` means "not known", never a zero. Reaching D1 here cannot delay the shell. |
+| GET | `/api/session` | Combined response, kept for existing consumers: identity + `meta: true`, `unread`, `limits`. The web app no longer uses it on boot. |
 | GET | `/api/mail/settings` | `{ retentionLimit, storageUsedBytes, storageQuotaBytes, totalMessages, starredMessages }`. |
 | PATCH | `/api/mail/settings` | Body: `{ retentionLimit: 500 \| 1500 \| 0 }`. Saves, runs retention immediately, returns the updated stats plus `cleanup: { trashPurged, trimmed }`. |
 | GET | `/api/mail/messages?folder=inbox\|starred\|sent\|drafts\|trash&limit=&before=` | One page, newest first (max 100). Returns `nextBefore` for "Load more". |

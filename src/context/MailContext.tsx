@@ -29,8 +29,12 @@ import { useAccountsSwitcher } from './useAccountsSwitcher';
 
 export const MailProvider: React.FC<{
   user: SessionUser;
+  /** Send quota from the deferred meta call; null while unknown. */
   sendRemainingToday: number | null;
   dailySendLimit: number | null;
+  /** Where the unread/quota strip stands. Never blocks the mailbox. */
+  sessionMetaStatus: 'loading' | 'ready' | 'error';
+  refreshSessionMeta: () => void;
   accountUrl: string;
   /** Accounts web origin, so the client can load its shared account widget. */
   accountsWebOrigin?: string;
@@ -38,9 +42,10 @@ export const MailProvider: React.FC<{
   authuser: number;
   /** Accounts slot id for that index. */
   activeId: string | null;
-  /** Switcher list + unread counts, already returned by /api/session. */
+  /** Switcher list, already returned by identity. */
   accounts: AccountSummary[];
-  unread: Record<string, number>;
+  /** Badges from the deferred meta call; null until it answers. */
+  unread: Record<string, number> | null;
   /** Re-reads /api/session after the active account changed. */
   onSessionChanged: () => Promise<void>;
   /** Paint a target account immediately (before the switch call answers). */
@@ -48,8 +53,10 @@ export const MailProvider: React.FC<{
   children: React.ReactNode;
 }> = ({
   user,
-  sendRemainingToday: initialRemaining,
+  sendRemainingToday: quotaFromMeta,
   dailySendLimit,
+  sessionMetaStatus,
+  refreshSessionMeta,
   accountUrl,
   accountsWebOrigin = '',
   authuser,
@@ -60,7 +67,14 @@ export const MailProvider: React.FC<{
   onSwitchAccount,
   children,
 }) => {
-  const [sendRemainingToday, setSendRemainingToday] = useState<number | null>(initialRemaining);
+  const [sendRemainingToday, setSendRemainingToday] = useState<number | null>(quotaFromMeta);
+
+  // The quota and the badges arrive after the shell, so this provider may mount
+  // with `null` and fill in later. Only a REAL change is applied, which keeps a
+  // locally decremented counter (right after a send) from being overwritten.
+  useEffect(() => {
+    if (quotaFromMeta !== null) setSendRemainingToday(quotaFromMeta);
+  }, [quotaFromMeta]);
 
   // ----- UI state ------------------------------------------------------------
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
@@ -154,8 +168,16 @@ export const MailProvider: React.FC<{
     resetForAccountSwitch: mailbox.resetForAccountSwitch,
     onSessionChanged,
     onSwitchAccount,
-    initial: { activeId, authuser, accounts: initialAccounts, unread: initialUnread },
+    initial: { activeId, authuser, accounts: initialAccounts, unread: initialUnread ?? {} },
   });
+
+  // Identity carried the account list; the deferred call brings the badges.
+  // They are merged into the switcher store so the widget and the fallback sheet
+  // show them without another accounts request.
+  const applyUnread = accounts.applyUnread;
+  useEffect(() => {
+    if (initialUnread) applyUnread(initialUnread);
+  }, [initialUnread, applyUnread]);
 
   // ----- Search -------------------------------------------------------------
   const resetSearch = useCallback(() => {
@@ -255,6 +277,8 @@ export const MailProvider: React.FC<{
     currentUser,
     sendRemainingToday,
     dailySendLimit,
+    sessionMetaStatus,
+    refreshSessionMeta,
     accountUrl,
     authuser,
     accountsWebOrigin,

@@ -9,6 +9,8 @@ import { MobileDrawer } from './components/MobileDrawer';
 import { Toast } from './components/Toast';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { useSession } from './hooks/useSession';
+import { useSessionMeta } from './hooks/useSessionMeta';
+import { UNKNOWN_LIMITS } from './services/mailApi';
 import { folderFromHash, hashForFolder } from './services/authuser';
 import { preloadAccountWidget } from './services/accountWidget';
 
@@ -212,8 +214,15 @@ const Screen: React.FC<{ title: string; detail?: string; onRetry?: () => void }>
 );
 
 export default function App() {
-  // Auth gate: nothing private renders until the Worker confirms the Accounts session.
-  const { state, retry, refresh, applyAccount } = useSession();
+  // Identity gate ONLY: nothing private renders until the Worker confirms the
+  // Accounts session, and that is the only thing the shell waits for.
+  const { state, retry, refresh, applyAccount, epoch } = useSession();
+
+  // Unread badges and the send quota are decoration, so they load separately and
+  // after the shell. If they never arrive, the app still works: unknown stays
+  // null, the quota label hides and the sidebar offers a retry.
+  const authuser = state.status === 'ready' ? state.info.authuser : 0;
+  const meta = useSessionMeta(state.status === 'ready', authuser, epoch);
 
   // Warm the shared account widget while the inbox paints, so the first avatar
   // tap opens the sheet with no network wait. Quietly ignored if it fails: the
@@ -226,10 +235,19 @@ export default function App() {
   if (state.status === 'loading') return <Screen title="Checking your Gothwad account…" />;
   if (state.status === 'redirecting') return <Screen title="Redirecting you to sign in…" />;
   if (state.status === 'error') {
-    return <Screen title="Can't open Gothwad Mail" detail={state.message} onRetry={retry} />;
+    return <Screen title="Can't open Gothwad Mail" detail={state.message} onRetry={() => void retry()} />;
   }
 
   const { info } = state;
+  // A meta answer is only usable for the account this tab shows right now.
+  const metaForThisAccount = meta.state.status === 'ready' && meta.state.authuser === info.authuser ? meta.state : null;
+  const limits = metaForThisAccount?.limits ?? UNKNOWN_LIMITS;
+  // "ready" is only honest when the numbers belong to the account on screen.
+  const metaStatus: 'loading' | 'ready' | 'error' = metaForThisAccount
+    ? 'ready'
+    : meta.state.status === 'error'
+      ? 'error'
+      : 'loading';
   return (
     <MailProvider
       // Keyed by account slot: switching remounts the provider, so no cached
@@ -238,14 +256,16 @@ export default function App() {
       // paints that account's last inbox instantly.
       key={info.activeId ?? `u${info.authuser}`}
       user={info.user}
-      sendRemainingToday={info.limits.sendRemainingToday}
-      dailySendLimit={info.limits.dailySendLimit}
+      sendRemainingToday={limits.sendRemainingToday}
+      dailySendLimit={limits.dailySendLimit}
+      sessionMetaStatus={metaStatus}
+      refreshSessionMeta={meta.retry}
       accountUrl={info.accountUrl}
       accountsWebOrigin={info.accountsWebOrigin ?? ''}
       authuser={info.authuser}
       activeId={info.activeId}
       accounts={info.accounts}
-      unread={info.unread}
+      unread={metaForThisAccount?.unread ?? null}
       onSessionChanged={refresh}
       onSwitchAccount={applyAccount}
     >

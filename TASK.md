@@ -2,6 +2,59 @@
 
 Updated every session. Newest first.
 
+## 2026-10-24 — Startup: identity first, metadata never blocks the shell
+
+**Owner request:** the app sat on a full-screen "Loading your Gothwad Account" gate for too
+long. Fix the real cause (audit for it, do not trust the prompt), keep authentication exactly as
+strong, and do not break mail, the switcher or the drafts.
+
+**What the audit found (measured, not assumed).** One `GET /api/session` request did everything
+in series: Accounts `/auth/me` (with cookie rotation), then `Db.from()` **including the schema
+bootstrap**, then `countSentToday`, then `unreadCounts` for every account, and only then the JSON
+that unlocked the whole app. The last two steps only feed a badge and one line of text. A failing
+unread query was even turned into `{}` — a fake "0 unread" — while a failing quota became `null`.
+
+**What changed**
+
+- `worker/src/sessionPayload.ts` (new): `identityPayload()` (no D1), `loadSessionMeta()`
+  (unread + quota in parallel, each failing soft) and `fullPayload()` for the old shape.
+- `GET /api/session?meta=0` → identity only, zero database work; `GET /api/session` unchanged;
+  new `GET /api/session/meta` → `{ authuser, unread | null, limits }`. `authuser` tags the
+  answer so a late response can be dropped. One Accounts verification per Worker request still.
+- `worker/src/accountList.ts`: `unreadCounts()` returns `null` on failure instead of `{}`, so
+  "unknown" and "empty" stay different.
+- `src/services/sessionClient.ts` (new): one in-flight request per endpoint **and** account
+  selector, shared by every consumer; the last release aborts the fetch; nothing is cached after
+  it settles; no payload in Web/Cache Storage.
+- `src/hooks/useSession.ts`: identity gate with attempt generations (late answers from an older
+  attempt, an older account or an unmounted app are dropped). `applyAccount` resets `limits` to
+  `null` so one account's quota is never shown on another.
+- `src/hooks/useSessionMeta.ts` (new): the deferred strip — `loading` / `ready` / `error`,
+  a retry that re-fetches only the strip, and a hard check that `meta.authuser` matches the
+  account on screen.
+- `src/App.tsx`: renders the shell from identity alone; metadata arrives later. `src/components/
+  Sidebar.tsx`: quota skeleton, then the number or "Send limit unavailable — retry".
+  `MailContext`/`useAccountsSwitcher` accept a late badge map instead of pretending it is empty.
+- `tests/ui-harness.tsx`: `setApiInterceptor()` so a test can hold or fail one API path while
+  everything else runs for real.
+
+**Verification (exact commands)**
+
+| Command | Result |
+| --- | --- |
+| `npm test` | **181 pass, 0 fail** (worker 96, ui 19, d1 15, config 10, widget 9, startup 7, routing 10, assets 7, auth 5, language 3) |
+| `npm run lint` | clean (web + worker `tsc --noEmit`) |
+| `npm run build` | built; 24 precache entries, 500.30 KiB |
+| `node tools/check-file-sizes.mjs` | 93 files, none over 500 lines |
+| `npx wrangler deploy --dry-run --config worker/wrangler.toml` | clean |
+| `curl` 5x: full vs identity | full 1.2–2.5 ms, identity 0.9–1.1 ms (local SQLite) |
+| Shell paint with meta held 2 s | shell 138 ms, strip 2152 ms |
+
+**Not done / limits:** this is a local, tested change — **nothing is deployed** by this session.
+The local numbers use `node:sqlite`, so they say nothing about production D1 latency; the honest
+claim is that the shell no longer waits for unread/quota at all. Accounts' own startup was not
+touched (that repository is read-only from here).
+
 
 ## 2026-10-22 — The account menu becomes the shared Accounts widget (audited, not copied)
 

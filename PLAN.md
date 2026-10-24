@@ -29,6 +29,18 @@
 | PWA | **Done** | Manifest `display_override`/shortcuts, offline app shell, fonts + images cached, `/api/*` never cached. |
 | Accessibility | **Done** | `prefers-reduced-motion`, visible focus, 44px+ targets, unread announced as text. |
 
+## Phase 2.7 — Startup: identity first (this branch)
+
+| Area | Status | Notes |
+| --- | --- | --- |
+| Identity / metadata split | **Done** | `GET /api/session?meta=0` (one Accounts verification, zero D1) gates the shell; `GET /api/session/meta` brings unread badges + send quota afterwards. `/api/session` keeps its old shape for other consumers. |
+| Honest unknowns | **Done** | Failed unread counts are `null` (a real empty mailbox is `{}`); a failed quota is `null`. The UI shows skeletons, then the number or a retry — never an invented zero. |
+| Request sharing | **Done** | One in-flight request per endpoint + `authuser` selector (`services/sessionClient.ts`), aborted when the last consumer leaves, nothing cached after settle. |
+| Stale-answer safety | **Done** | Attempt generations in `useSession` + `meta.authuser` check in `App`; a late answer for account A cannot paint account B, and an abandoned attempt cannot restore a signed-out view. |
+| Send cap | **Unchanged** | Still counted and enforced inside `POST /api/mail/send`, independently of the delayed label. |
+| Tests | **Done** | 181 pass, incl. `worker/test/session-meta.test.ts`, `tests/session-startup.test.ts`, `tests/ui-startup.test.tsx`. |
+| Deploy | **Pending** | Local only. Worker + Pages deployment is the owner's step (see HANDOVER.md). |
+
 ## Phase 1 — Real app on the free tier (done earlier)
 
 | Area | Status | Notes |

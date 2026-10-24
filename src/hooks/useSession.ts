@@ -1,7 +1,12 @@
 // =============================================================================
 // Session hook: asks the Mail Worker "who is signed in?" once on load.
 //
-// - 200 -> ready (we have the user + limits).
+// The call is IDENTITY only (`/api/session?meta=0`): one Accounts verification
+// and nothing else. Unread badges and the send quota are a second, optional call
+// (useSessionMeta), so a slow database cannot hold the whole app behind a
+// spinner. The shell paints the moment identity is verified.
+//
+// - 200 -> ready (user, this tab's account, the switcher list).
 // - 401 + signinUrl -> send the browser to Accounts with ?next= back to this
 //          Mail page. If that return still gets 401, show an error instead of
 //          looping through the chooser forever.
@@ -9,12 +14,17 @@
 //          Accounts is down). A 503 must NEVER redirect: the chooser would just
 //          come back. The screen shows the reason with a Retry button.
 // - other -> show an error with a retry button (no fake signed-in state).
+//
+// Requests are shared per account selector (services/sessionClient.ts) and
+// every attempt carries a generation: an answer that belongs to an older
+// attempt, an older account, or an unmounted app is dropped, never painted.
 // =============================================================================
 
-import { useCallback, useEffect, useState } from 'react';
-import { API_ERROR, ApiError, mailApi, SessionInfo, type AccountSummary } from '../services/mailApi';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { API_ERROR, ApiError, type SessionInfo, type AccountSummary } from '../services/mailApi';
 import { buildSigninUrl, clearAuthReturnMarker, isAuthReturnUrl } from '../services/authRedirect';
 import { normalizeAuthUserUrl, onUrlAccountChange } from '../services/authuser';
+import { requestIdentity } from '../services/sessionClient';
 
 export { buildSigninUrl } from '../services/authRedirect';
 
@@ -76,24 +86,39 @@ function clearReturnMarker(): void {
 export function useSession() {
   const [state, setState] = useState<SessionState>({ status: 'loading' });
 
+  // Every attempt gets a number. Only the newest one may write state, so a slow
+  // answer from an abandoned attempt (or from before an account switch) cannot
+  // revive a stale or signed-out view.
+  const attemptRef = useRef(0);
+  // Bumped after every successful (re)check so the meta hook re-reads badges.
+  const [epoch, setEpoch] = useState(0);
+
   /**
    * `silent` re-checks the session without the full-screen loading state.
    * Used after switching accounts: the mailbox is about to be replaced, so
    * flashing "Checking your account…" over the whole app looks like a reload.
+   *
+   * Returns the cleanup that releases this attempt (the caller in useEffect
+   * returns it, so unmounting cancels the request).
    */
   const load = useCallback((opts: { silent?: boolean } = {}) => {
     // `/mail/u/1/#sent`, `/?authuser=1`, `/?u=1` all become /u/1/#sent before
     // the first fetch, so every later request and every refresh uses the same
     // canonical URL.
     normalizeAuthUserUrl();
+    const attempt = ++attemptRef.current;
     if (!opts.silent) setState({ status: 'loading' });
-    mailApi
-      .getSession()
+
+    const shared = requestIdentity();
+    shared.promise
       .then((info) => {
+        if (attempt !== attemptRef.current) return;
         clearReturnMarker();
         setState({ status: 'ready', info });
+        setEpoch((n) => n + 1);
       })
       .catch((err: unknown) => {
+        if (attempt !== attemptRef.current) return;
         const failure = classifySessionFailure(err, isAuthReturnUrl(window.location.href));
         if (failure.kind === 'redirect') {
           setState({ status: 'redirecting' });
@@ -105,10 +130,17 @@ export function useSession() {
         if (failure.kind === 'return-error') clearReturnMarker();
         setState({ status: 'error', message: failure.message });
       });
+
+    return () => shared.release();
   }, []);
 
   useEffect(() => {
-    load();
+    const release = load();
+    return () => {
+      // Unmount: nothing from this attempt may touch state any more.
+      attemptRef.current += 1;
+      release();
+    };
   }, [load]);
 
   /**
@@ -116,38 +148,51 @@ export function useSession() {
    * The URL has already been pushed to /u/<n>/, so the provider remounts with
    * that account's cached mailbox in the same frame (<16ms). The background
    * switch call then confirms it and rotates the cookies.
+   *
+   * `limits` goes back to null: the quota label belongs to the account that
+   * earned it, so it must not be carried across a switch.
    */
-  const applyAccount = useCallback((account: AccountSummary, all: AccountSummary[], unread: Record<string, number>) => {
-    setState((prev) => {
-      if (prev.status !== 'ready') return prev;
-      return {
-        status: 'ready',
-        info: {
-          ...prev.info,
-          user: {
-            username: account.username,
-            email: account.email,
-            name: account.name,
-            firstName: account.firstName,
-            lastName: account.lastName,
-            avatarUrl: account.avatarUrl,
+  const applyAccount = useCallback(
+    (account: AccountSummary, all: AccountSummary[], unread: Record<string, number>) => {
+      setState((prev) => {
+        if (prev.status !== 'ready') return prev;
+        return {
+          status: 'ready',
+          info: {
+            ...prev.info,
+            user: {
+              username: account.username,
+              email: account.email,
+              name: account.name,
+              firstName: account.firstName,
+              lastName: account.lastName,
+              avatarUrl: account.avatarUrl,
+            },
+            authuser: account.authuser,
+            activeId: account.id,
+            accounts: all,
+            unread,
+            limits: null,
+            accountUrl: account.accountUrl,
           },
-          authuser: account.authuser,
-          activeId: account.id,
-          accounts: all,
-          unread,
-          accountUrl: account.accountUrl,
-        },
-      };
-    });
-  }, []);
+        };
+      });
+    },
+    []
+  );
 
-  /** Re-read the session after the active account changed. */
+  /** Re-read identity after the active account changed (silent, shared). */
   const refresh = useCallback(async () => {
+    normalizeAuthUserUrl();
+    const attempt = ++attemptRef.current;
+    const shared = requestIdentity();
     try {
-      const info = await mailApi.getSession();
+      const info = await shared.promise;
+      if (attempt !== attemptRef.current) return;
       setState({ status: 'ready', info });
+      setEpoch((n) => n + 1);
     } catch (err) {
+      if (attempt !== attemptRef.current) return;
       const failure = classifySessionFailure(err, isAuthReturnUrl(window.location.href));
       if (failure.kind === 'redirect') {
         setState({ status: 'redirecting' });
@@ -155,6 +200,8 @@ export function useSession() {
         return;
       }
       setState({ status: 'error', message: failure.message });
+    } finally {
+      shared.release();
     }
   }, []);
 
@@ -164,5 +211,5 @@ export function useSession() {
    */
   useEffect(() => onUrlAccountChange(() => void refresh()), [refresh]);
 
-  return { state, retry: load, refresh, applyAccount };
+  return { state, retry: load, refresh, applyAccount, epoch };
 }

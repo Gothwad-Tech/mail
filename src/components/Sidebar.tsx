@@ -31,6 +31,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed }) => {
     dailySendLimit,
     accountUrl,
     unreadInboxCount,
+    sessionMetaStatus,
+    refreshSessionMeta,
   } = useMail();
 
   return (
@@ -113,7 +115,23 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed }) => {
               Manage account
             </a>
           </div>
-          {sendRemainingToday !== null && dailySendLimit !== null && (
+          {/* The quota arrives after the shell. Until then: a neutral skeleton,
+              never a made-up number; if it fails: a retry for this strip only. */}
+          {sessionMetaStatus === 'loading' && (
+            <div className="px-1" aria-hidden="true">
+              <div data-testid="quota-skeleton" className="h-2.5 w-32 animate-pulse rounded-full bg-neutral-200 dark:bg-[#333333]" />
+            </div>
+          )}
+          {sessionMetaStatus === 'error' && (
+            <button
+              type="button"
+              onClick={refreshSessionMeta}
+              className="px-1 text-left text-[11px] text-[#0494f4] hover:underline"
+            >
+              Send limit unavailable — retry
+            </button>
+          )}
+          {sessionMetaStatus === 'ready' && sendRemainingToday !== null && dailySendLimit !== null && (
             <p className="px-1 text-[11px] text-neutral-500 dark:text-neutral-400">
               {sendRemainingToday} of {dailySendLimit} sends left today
             </p>

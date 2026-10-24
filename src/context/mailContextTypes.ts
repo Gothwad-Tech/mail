@@ -115,6 +115,10 @@ export interface MailContextType {
   currentUser: UserProfile;
   sendRemainingToday: number | null;
   dailySendLimit: number | null;
+  /** Where the deferred unread/quota strip stands (skeleton, retry, numbers). */
+  sessionMetaStatus: 'loading' | 'ready' | 'error';
+  /** Retry only the unread/quota strip; the mailbox is never re-fetched. */
+  refreshSessionMeta: () => void;
   accountUrl: string;
   /** This tab's account index (/u/<n>/). */
   authuser: number;
@@ -124,6 +128,7 @@ export interface MailContextType {
   // Account switcher (multiple signed-in Gothwad accounts)
   accounts: AccountSummary[];
   activeAccountId: string | null;
+  /** username -> unread count. `{}` until the deferred meta call answers. */
   accountUnread: Record<string, number>;
   /** Accounts has not deployed the multi-account API yet: hide the switcher. */
   accountsUnsupported: boolean;
