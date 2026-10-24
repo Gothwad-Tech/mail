@@ -28,6 +28,18 @@ export async function resetAccounts(): Promise<void> {
   await realFetch(`${API}/__local/reset-accounts`, { method: 'POST' });
 }
 
+/**
+ * Lets a test answer one API path itself instead of forwarding it to the Worker.
+ * Used by the startup tests to hold `/api/session/meta` open (a slow database)
+ * or to fail it (an unreachable one) while the rest of the app runs for real.
+ * Return null to fall through to the Worker.
+ */
+export type ApiInterceptor = (url: string, init?: RequestInit) => Promise<Response | null> | Response | null;
+let apiInterceptor: ApiInterceptor | null = null;
+export const setApiInterceptor = (fn: ApiInterceptor | null): void => {
+  apiInterceptor = fn;
+};
+
 const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
   url: `${APP_ORIGIN}/`,
   pretendToBeVisual: true,
@@ -63,6 +75,8 @@ const realFetch = globalThis.fetch;
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
   if (url.startsWith('/api/')) {
+    const intercepted = apiInterceptor ? await apiInterceptor(url, init) : null;
+    if (intercepted) return intercepted;
     const headers = new Headers(init?.headers);
     headers.set('cookie', activeCookie);
     // Browsers send Origin on same-origin writes; the Worker's CSRF guard needs it.

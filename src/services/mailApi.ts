@@ -35,6 +35,23 @@ export interface SessionUser {
   avatarUrl?: string | null;
 }
 
+/** Daily send cap plus what is left today. `null` means "not known yet". */
+export interface SessionLimits {
+  dailySendLimit: number | null;
+  sendRemainingToday: number | null;
+}
+
+/** Both limits unknown: the label hides instead of claiming a number. */
+export const UNKNOWN_LIMITS: SessionLimits = { dailySendLimit: null, sendRemainingToday: null };
+
+/**
+ * Who is signed in, plus everything the shell needs.
+ *
+ * `unread` and `limits` are the optional half: the identity request
+ * (`?meta=0`) leaves them `null`, and a second, non-blocking call fills them in
+ * through {@link SessionMetaInfo}. `null` always means "not known yet" — never a
+ * zero, because "0 unread" would be a claim the app cannot back up.
+ */
 export interface SessionInfo {
   user: SessionUser;
   /** This tab's account index (/u/<n>/), 0..5. */
@@ -43,8 +60,8 @@ export interface SessionInfo {
   activeId: string | null;
   /** Every account signed in in this browser, in stable order. */
   accounts: AccountSummary[];
-  /** username -> unread inbox count (Mail's D1). */
-  unread: Record<string, number>;
+  /** username -> unread inbox count, or null while it is not loaded yet. */
+  unread: Record<string, number> | null;
   /** Accounts' profile page for the current account. */
   accountUrl: string;
   /**
@@ -53,7 +70,18 @@ export interface SessionInfo {
    * so no domain is ever hardcoded in the browser bundle.
    */
   accountsWebOrigin?: string;
-  limits: { dailySendLimit: number; sendRemainingToday: number | null };
+  /** Send quota, or null while it is not loaded yet. */
+  limits: SessionLimits | null;
+  /** False on the identity half, true on the combined `/api/session` answer. */
+  meta?: boolean;
+}
+
+/** The deferred half of the session (`GET /api/session/meta`). */
+export interface SessionMetaInfo {
+  /** Which account these numbers belong to, so a late answer can be ignored. */
+  authuser: number;
+  unread: Record<string, number> | null;
+  limits: SessionLimits;
 }
 
 export interface ApiMessage {
@@ -132,11 +160,20 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+interface ApiRequestInit {
+  method?: string;
+  body?: unknown;
+  /** Owning page can cancel the call; an aborted call rejects with ApiError 0. */
+  signal?: AbortSignal;
+  /** Override the tab's account index (used by the deferred session call). */
+  authuser?: number;
+}
+
+async function request<T>(path: string, init: ApiRequestInit = {}): Promise<T> {
   // Every call carries this tab's account index. That is what keeps /u/0 and
   // /u/1 independent: the Worker forwards it to Accounts, which resolves that
   // slot without touching the browser-wide active account.
-  const headers: Record<string, string> = { accept: 'application/json', ...authUserHeaders() };
+  const headers: Record<string, string> = { accept: 'application/json', ...authUserHeaders(init.authuser) };
   if (init.body !== undefined) headers['content-type'] = 'application/json';
 
   let res: Response;
@@ -145,9 +182,12 @@ async function request<T>(path: string, init: { method?: string; body?: unknown 
       method: init.method || 'GET',
       credentials: 'include',
       headers,
+      signal: init.signal,
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
     });
   } catch {
+    // Includes AbortError: a cancelled call is not a network failure the user
+    // should be told about, so callers drop it by their own generation check.
     throw new ApiError(0, 'network', 'Cannot reach Gothwad Mail right now. Check your connection.');
   }
 
@@ -168,7 +208,16 @@ async function request<T>(path: string, init: { method?: string; body?: unknown 
 }
 
 export const mailApi = {
-  getSession: () => request<SessionInfo & { authenticated: true }>('/session'),
+  /**
+   * Identity only: one Accounts verification, zero database work, so the shell
+   * can paint without waiting for unread badges or the send quota.
+   */
+  getSession: (opts: { signal?: AbortSignal; authuser?: number } = {}) =>
+    request<SessionInfo & { authenticated: true }>('/session?meta=0', opts),
+
+  /** The deferred half: unread badges + send quota. Never blocks the shell. */
+  getSessionMeta: (opts: { signal?: AbortSignal; authuser?: number } = {}) =>
+    request<SessionMetaInfo>('/session/meta', opts),
 
   listMessages: (folder: EmailFolder, opts: { before?: string; limit?: number } = {}) => {
     const qs = new URLSearchParams({ folder, limit: String(opts.limit ?? 50) });

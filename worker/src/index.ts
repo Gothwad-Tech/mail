@@ -8,7 +8,9 @@
 //
 // Endpoints (all JSON, all need a signed-in Accounts session except /api/health):
 //   GET    /api/health                     (public: D1 readiness + config booleans)
-//   GET    /api/session
+//   GET    /api/session                    identity + metadata (unchanged shape)
+//   GET    /api/session?meta=0             identity only: what the app boots on
+//   GET    /api/session/meta               unread + quota (deferred, non-blocking)
 //   GET    /api/mail/settings              storage + retention
 //   PATCH  /api/mail/settings              { retentionLimit: 500 | 1500 | 0 }
 //   GET    /api/mail/messages?folder=inbox|starred|sent|drafts|trash&limit=&before=
@@ -31,7 +33,11 @@ import { corsHeaders, errorResponse, HttpError, json, assertSafeWrite, readJson 
 import * as mail from './mail';
 import { addAccountResponse, listAccounts, signOutAccount, signOutAllAccounts, switchAccount } from './accounts';
 import { authUserFromRequest } from './authuser';
-import { unreadCounts } from './accountList';
+import {
+  fullPayload,
+  identityPayload,
+  loadSessionMeta,
+} from './sessionPayload';
 import { handleInbound } from './inbound';
 import {
   enforceRetention,
@@ -71,67 +77,37 @@ async function settingsPayload(env: Env, username: string) {
 }
 
 /**
- * Origin the browser should load the shared account widget from.
+ * GET /api/session
  *
- * Production: the configured Accounts web host (AUTH_SIGNIN_URL). Development:
- * the host the browser actually used, because the local dev server serves the
- * widget stand-in at `/widget/account-menu.js` and Vite proxies that path. Using
- * the request host here is safe because it is only a browser-side hint, it is
- * never used for a redirect, and it only happens when ENVIRONMENT=development.
+ * Two halves on purpose:
+ *   `?meta=0` -> identity only (one Accounts call, no D1). This is what the app
+ *                boots with, so a slow database cannot delay the shell.
+ *   default   -> identity + unread + quota in a single response. Kept for
+ *                existing consumers and for anyone wanting one round trip.
  */
-function accountsWebOriginFor(request: Request, config: Config): string {
-  if (config.isProduction) return config.authSigninUrl;
-  const host = request.headers.get('host');
-  if (!host || !/^[a-z0-9.-]+(:\d+)?$/i.test(host)) return config.authSigninUrl;
-  const proto = request.headers.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
-  return `${proto}://${host}`;
-}
-
-async function handleSession(request: Request, env: Env, config: Config): Promise<Response> {
+async function handleSession(request: Request, env: Env, config: Config, url: URL): Promise<Response> {
   const session = await requireSession(request, config);
 
-  // The remaining-today count is nice to have. If the DB is down, the session still works.
-  let sendRemainingToday: number | null = null;
-  try {
-    const db = await Db.from(env);
-    const sent = await mail.countSentToday(db, session.username);
-    sendRemainingToday = Math.max(config.dailySendLimit - sent, 0);
-  } catch {
-    sendRemainingToday = null;
+  if (url.searchParams.get('meta') === '0') {
+    return json(identityPayload(request, config, session));
   }
 
-  // Single-call boot (Accounts v2.3): the same upstream /auth/me that resolved
-  // this session also returned the switcher list, so the app hydrates the user,
-  // the authuser index, the account list AND the unread badges in one round trip.
-  const unread = await unreadCounts(
-    env,
-    session.accounts.map((a) => a.username)
-  );
+  const meta = await loadSessionMeta(env, config, session);
+  return json(fullPayload(request, config, session, meta));
+}
 
-  return json({
-    authenticated: true,
-    user: {
-      username: session.username,
-      email: session.email,
-      name: session.name,
-      firstName: session.firstName,
-      lastName: session.lastName,
-      // The account widget shows the real photo when Accounts has one.
-      avatarUrl: session.avatarUrl,
-    },
-    // The account this TAB is showing (from /u/<n>/ or X-Gothwad-Authuser).
-    authuser: session.authuser,
-    activeId: session.activeId,
-    accounts: session.accounts,
-    unread,
-    // Browser-facing link for THIS account, so it uses AUTH_SIGNIN_URL.
-    accountUrl: session.accountUrl,
-    // Origin of the Accounts web app. The browser loads the shared account
-    // widget from `${accountsWebOrigin}/widget/account-menu.js`; deriving it
-    // here keeps the domain out of the client bundle.
-    accountsWebOrigin: accountsWebOriginFor(request, config),
-    limits: { dailySendLimit: config.dailySendLimit, sendRemainingToday },
-  });
+/**
+ * GET /api/session/meta
+ *
+ * The deferred half: unread badges for the accounts Accounts just confirmed,
+ * plus the send quota. It re-verifies with Accounts (one call, same rule as
+ * every other route) and never redirects anything by itself: the browser only
+ * faces a sign-in redirect from the identity call.
+ */
+async function handleSessionMeta(request: Request, env: Env, config: Config): Promise<Response> {
+  const session = await requireSession(request, config);
+  const meta = await loadSessionMeta(env, config, session);
+  return json({ authenticated: true, meta: true, ...meta });
 }
 
 async function handleSend(request: Request, env: Env, config: Config, session: Session): Promise<Response> {
@@ -261,7 +237,11 @@ async function route(request: Request, env: Env, config: Config): Promise<Respon
   }
 
   if (path === '/api/session' && method === 'GET') {
-    return handleSession(request, env, config);
+    return handleSession(request, env, config, url);
+  }
+
+  if (path === '/api/session/meta' && method === 'GET') {
+    return handleSessionMeta(request, env, config);
   }
 
   if (path === '/api/mail/settings' && method === 'GET') {

@@ -25,6 +25,11 @@ Trash empties after 30 days.
 No demo data. Mailbox ownership comes from the verified Accounts session; messages live in
 Mail's own D1 database. Inbound addresses are checked through Accounts' internal API.
 
+**Startup waits for identity only.** `GET /api/session?meta=0` is one Accounts verification and
+no database work; the shell paints as soon as it answers. Unread badges and the send quota load
+afterwards (`GET /api/session/meta`), with skeletons, a strip-local retry, and `null` instead of
+a made-up zero. Details and local measurements: [docs/STARTUP.md](docs/STARTUP.md).
+
 ## Quick start (local)
 
 ```bash
@@ -54,6 +59,7 @@ Without a signed-in Accounts session the app sends you to Accounts. For local wo
 | `npm run test:worker` | Worker tests on real SQLite (no network) |
 | `npm run test:d1` | D1 adapter, gzip and retention tests on real SQLite |
 | `npm run test:auth` | Sign-in redirect/return URL tests (no network) |
+| `npm run test:startup` | Shared/cancelled session requests and the identity-first startup |
 | `npm run test:routing` | `/u/<n>/` URL routing, aliases and hash folders |
 | `npm run test:assets` | Root-relative assets, one web manifest, service worker never caches `/api` |
 | `npm run test:widget` | Account-widget contract: the `open(state, opts)` mapping and the loader |
@@ -104,6 +110,9 @@ The Worker is named `mail` in the Cloudflare dashboard and `worker/wrangler.toml
 
 - [docs/SETUP.md](docs/SETUP.md): human setup steps (D1, secrets, deploy, verification).
 - [docs/MAIL.md](docs/MAIL.md): how sign-in, storage, retention, sending and inbound work.
+- [docs/STARTUP.md](docs/STARTUP.md): what the app waits for on boot, what it defers, and the
+  measured local numbers.
+- [HANDOVER.md](HANDOVER.md): current state, how to verify it, and what is left to deploy.
 - [AGENTS.md](AGENTS.md): rules for working on this repo.
 - [PLAN.md](PLAN.md): status and open decisions.
 - [TASK.md](TASK.md): session log.

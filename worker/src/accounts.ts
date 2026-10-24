@@ -161,11 +161,12 @@ async function payloadFor(
   }
   const tabActiveId = accounts[authuser]?.id ?? activeId;
 
+  // A failed count shows no pills at all (`null`) rather than claiming zeros.
   const unread = await unreadCounts(
     env,
     accounts.map((a) => a.username)
   );
-  return { activeId: tabActiveId, authuser, accounts, unread };
+  return { activeId: tabActiveId, authuser, accounts, unread: unread ?? {} };
 }
 
 /** GET /api/mail/accounts */

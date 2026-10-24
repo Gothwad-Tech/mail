@@ -56,6 +56,13 @@ export function useAccountsSwitcher({
   }, []);
 
   /**
+   * Badges from the deferred session-meta call. Kept separate from the list
+   * fetch: the accounts themselves come with identity, these numbers arrive
+   * later and may never arrive at all.
+   */
+  const applyUnread = useCallback((next: Record<string, number>) => setAccountUnread(next), []);
+
+  /**
    * Refresh the list. `force` skips the boot-time fetch, because /api/session
    * already returned the same payload (single-call boot).
    */
@@ -193,6 +200,7 @@ export function useAccountsSwitcher({
     accountsUnsupported,
     isLoadingAccounts,
     switchingAccountId,
+    applyUnread,
     refreshAccounts,
     switchAccount,
     signOutAccount,

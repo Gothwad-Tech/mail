@@ -122,10 +122,15 @@ export function pickAccount(accounts: PublicAccount[], authuser: number): Public
  *
  * Only usernames that Accounts just confirmed are queried, so this can never be
  * used to read another mailbox's counts. One grouped query, not one per account.
- * A count is decoration, so a failure returns an empty map instead of an error.
+ *
+ * Returns `null` when the count could not be computed. That distinction matters:
+ * an empty object would render as "0 unread" for every account, which is a claim
+ * the database never made. Callers either show the badges (object) or show
+ * nothing until a retry (null).
  */
-export async function unreadCounts(env: Env, usernames: string[]): Promise<Record<string, number>> {
+export async function unreadCounts(env: Env, usernames: string[]): Promise<Record<string, number> | null> {
   const unique = [...new Set(usernames)].slice(0, MAX_ACCOUNTS);
+  // No usernames (bearer or dev session) is a real answer, not a failure.
   if (unique.length === 0) return {};
   const placeholders = unique.map(() => '?').join(', ');
   try {
@@ -144,6 +149,6 @@ export async function unreadCounts(env: Env, usernames: string[]): Promise<Recor
     for (const row of rows) out[row.username] = Number(row.n ?? 0);
     return out;
   } catch {
-    return {};
+    return null;
   }
 }
